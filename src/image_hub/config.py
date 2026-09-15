@@ -16,12 +16,13 @@ class Settings(BaseSettings):
     session_secret: str = "development-only-change-me"
     bootstrap_admin_username: str = "admin"
     bootstrap_admin_password: str = "change-me-now"
-    libtv_cli: Path = Path("/home/oddc/.libtv/libtv")
+    # 默认按当前用户的 home 目录解析，部署时用 IMAGE_HUB_LIBTV_CLI 覆盖。
+    libtv_cli: Path = Path.home() / ".libtv" / "libtv"
     lovart_access_key: str = ""
     lovart_secret_key: str = ""
     lovart_base_url: str = "https://lgw.lovart.ai"
     lovart_skill_script: Path = Path(
-        "/home/oddc/.hermes/skills/creative/lovart-api/scripts/agent_skill.py"
+        Path.home() / ".hermes" / "skills" / "creative" / "lovart-api" / "scripts" / "agent_skill.py"
     )
     openai_image_api_key: str = ""
     openai_image_base_url: str = "https://ark.cn-beijing.volces.com/api/v3"

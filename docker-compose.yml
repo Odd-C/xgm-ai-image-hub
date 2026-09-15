@@ -8,5 +8,8 @@ services:
     volumes:
       - ./data:/app/data
       - ./storage:/app/storage
-      - /home/oddc/.libtv:/home/oddc/.libtv:ro
-      - /home/oddc/.hermes/skills/creative/lovart-api:/home/oddc/.hermes/skills/creative/lovart-api:ro
+      # LibTV / Lovart 适配器需要容器内可访问本机的 CLI 与适配脚本。
+      # 只有同时使用这两个平台时才需要取消注释，并按你的实际路径调整；
+      # 对应的 IMAGE_HUB_LIBTV_CLI / IMAGE_HUB_LOVART_SKILL_SCRIPT 要指向容器内路径。
+      # - ${LIBTV_HOME:-$HOME/.libtv}:/opt/libtv:ro
+      # - ${LOVART_SKILL_HOME:-$HOME/.lovart}:/opt/lovart:ro
