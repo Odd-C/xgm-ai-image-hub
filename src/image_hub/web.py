@@ -773,4 +773,4 @@ def reference_file(
 @router.get("/health")
 def health(session: Session = Depends(get_session)):
     queued = session.scalar(select(Generation).where(or_(Generation.status == "queued", Generation.status == "running")).limit(1))
-    return {"status": "ok", "service": "ai-image-hub", "worker_backlog": bool(queued)}
+    return {"status": "ok", "service": "xgm-ai-image-hub", "worker_backlog": bool(queued)}

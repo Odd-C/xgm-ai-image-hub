@@ -365,7 +365,7 @@ function setSentiment(n,value,button){const primary=primaryOf(n);if(!primary)ret
    canvas and re-encoding keeps the download a real PNG. A tainted canvas (for
    example when the file is opened straight from disk) or a failed decode is
    reported instead of silently doing nothing. */
-function pngName(url){const base=String(url||'').split('?')[0].split('/').filter(Boolean).pop()||'';return `${base.replace(/\.[a-z0-9]+$/i,'')||'ai-image-hub'}.png`}
+function pngName(url){const base=String(url||'').split('?')[0].split('/').filter(Boolean).pop()||'';return `${base.replace(/\.[a-z0-9]+$/i,'')||'xgm-ai-image-hub'}.png`}
 function downloadPng(url){
   if(!url)return;
   const image=new Image();

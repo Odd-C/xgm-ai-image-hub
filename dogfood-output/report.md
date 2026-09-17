@@ -1,4 +1,4 @@
-# AI Image Hub V1 精度画布 UI 最终浏览器验收报告
+# XGM AI Image Hub V1 精度画布 UI 最终浏览器验收报告
 
 ## 执行摘要
 

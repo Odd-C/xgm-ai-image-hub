@@ -96,7 +96,7 @@ def png_download_name(source_name: str, generation_id: str = "") -> str:
     safe = DOWNLOAD_STEM_PATTERN.sub("-", stem).strip("-._")[:60]
     prefix = re.sub(r"[^0-9A-Za-z]+", "", str(generation_id or ""))[:8]
     if not safe or (safe.lower() in GENERIC_ARTIFACT_STEMS and prefix):
-        safe = f"ai-image-hub-{prefix}" if prefix else (safe or "ai-image-hub")
+        safe = f"xgm-ai-image-hub-{prefix}" if prefix else (safe or "xgm-ai-image-hub")
     return f"{safe}{PNG_EXTENSION}"
 
 

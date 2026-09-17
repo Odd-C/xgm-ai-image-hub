@@ -1,6 +1,6 @@
 ---
 version: alpha
-name: AI Image Hub Precision Canvas
+name: XGM AI Image Hub Precision Canvas
 description: Figma 的画布克制、Vercel 的组件精度与 Apple 的图片优先，共同构成面向部门用户的轻量 AI 生图工具。
 colors:
   primary: "#171717"
@@ -108,7 +108,7 @@ components:
 
 ## Overview
 
-AI Image Hub 是部门内部使用的多平台 AI 生图聚合工具。界面不承担营销、教学或 Agent 对话；视觉必须让图片成为第一主角，让生图请求成为轻量工具，让节点连线只表达参考输入和结果派生。
+XGM AI Image Hub 是部门内部使用的多平台 AI 生图聚合工具。界面不承担营销、教学或 Agent 对话；视觉必须让图片成为第一主角，让生图请求成为轻量工具，让节点连线只表达参考输入和结果派生。
 
 设计融合三种成熟语言：
 

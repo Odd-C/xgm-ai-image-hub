@@ -1,5 +1,5 @@
 services:
-  image-hub:
+  xgm-ai-image-hub:
     build: .
     restart: unless-stopped
     env_file: .env

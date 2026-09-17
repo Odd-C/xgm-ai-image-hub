@@ -1,8 +1,8 @@
 {% extends "base.html" %}
-{% block title %}项目 · AI Image Hub{% endblock %}
+{% block title %}项目 · XGM AI Image Hub{% endblock %}
 {% block body %}
 <header class="topbar">
-  <a class="brand" href="/projects"><span class="brand-mark">IH</span><span>AI Image Hub</span></a>
+  <a class="brand" href="/projects"><span class="brand-mark">XGM</span><span>XGM AI Image Hub</span></a>
   <nav><span class="nav-tab active">项目</span><a class="nav-canvas" href="{{ canvas_url }}">画布</a>{% if user.role == "admin" %}<a href="/admin">系统管理</a>{% endif %}</nav>
   <div class="account"><span>{{ user.display_name or user.username }}{% if user.department %} · {{ user.department }}{% endif %}</span><a class="text-button" href="/account">账号设置</a><form method="post" action="/logout"><input type="hidden" name="csrf" value="{{ csrf_token }}"><button class="text-button">退出</button></form></div>
 </header>

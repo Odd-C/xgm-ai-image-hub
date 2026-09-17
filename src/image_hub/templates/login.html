@@ -1,10 +1,10 @@
 {% extends "base.html" %}
-{% block title %}登录 · AI Image Hub{% endblock %}
+{% block title %}登录 · XGM AI Image Hub{% endblock %}
 {% block body %}
 <main class="login-shell">
   <form class="login-card" method="post" action="/login">
     <input type="hidden" name="csrf" value="{{ csrf_token }}">
-    <div><span class="brand-mark">IH</span><strong>AI Image Hub</strong></div>
+    <div><span class="brand-mark">XGM</span><strong>XGM AI Image Hub</strong></div>
     <h2>登录工作台</h2>
     {% if error %}<p class="error-banner">{{ error }}</p>{% endif %}
     <label>账号<input name="username" autocomplete="username" autofocus required></label>

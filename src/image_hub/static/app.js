@@ -70,8 +70,8 @@
       try { name = decodeURIComponent(name); } catch { /* keep the raw header value */ }
       if (name.toLowerCase().endsWith('.png')) return name;
     }
-    const tail = String(url || '').split('?')[0].split('/').filter(Boolean).pop() || 'ai-image-hub';
-    return `${tail.replace(/\.[a-z0-9]+$/i, '') || 'ai-image-hub'}.png`;
+    const tail = String(url || '').split('?')[0].split('/').filter(Boolean).pop() || 'xgm-ai-image-hub';
+    return `${tail.replace(/\.[a-z0-9]+$/i, '') || 'xgm-ai-image-hub'}.png`;
   }
   function toast(message, error = false) { const el = $('#toast'); el.textContent = message; el.className = `toast show${error ? ' error' : ''}`; window.setTimeout(() => { el.className = 'toast'; }, 2400); }
   async function responseJson(response) { const payload = await response.json().catch(() => ({})); if (response.status === 401) location.href = '/login'; if (!response.ok) throw new Error(payload.detail || '操作失败'); return payload; }
