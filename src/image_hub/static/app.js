@@ -986,7 +986,13 @@
       else {
         const tile = event.target.closest('.result-tile');
         const result = tile && batch ? resultInNode(node, tile.dataset.resultId) : null;
-        if (event.detail === 0 || pointerSelectionId !== node.id) selectNode(node.id, event.shiftKey);
+        /* Clicking into a textarea/select must not yank focus back to the node
+           container. startNodeDrag bails out on editable targets, so
+           pointerSelectionId is stale here and the fallback would otherwise
+           call selectNode() with focus=true — whose rAF then focuses the
+           <article tabindex="-1"> and steals the caret. Selection on that path
+           is already handled by the focusin listener above (focus=false). */
+        if ((event.detail === 0 || pointerSelectionId !== node.id) && !core.isEditableTarget(event.target)) selectNode(node.id, event.shiftKey);
         pointerSelectionId = '';
         if (!result) return;
         /* Debounced so a following double click opens the viewer instead. */
