@@ -469,7 +469,15 @@
     }));
 
     const refByLegacyResultId = new Map();
-    plan.forEach((entry, nodeId) => entry.results.forEach(result => refByLegacyResultId.set(result.id, resultRefId(nodeId, result.id))));
+    // A multi-result legacy request is split so each card owns exactly one
+    // result. Only the first result stays on the original node; the rest are
+    // re-homed onto `${nodeId}-result-${index + 1}`, which is the same naming
+    // rule splitGenerationNodes uses below. References must be remapped to the
+    // node that will actually own the result, not the node they came from.
+    plan.forEach((entry, nodeId) => entry.results.forEach((result, index) => {
+      const ownerId = index === 0 ? nodeId : `${nodeId}-result-${index + 1}`;
+      refByLegacyResultId.set(result.id, resultRefId(ownerId, result.id));
+    }));
     const remapRefs = refs => uniqueRefs((refs || []).map(ref => refByLegacyResultId.get(ref) || ref));
 
     const migratedNodes = [];
@@ -669,6 +677,15 @@
       clone.uploading = false;
       clone.error = '';
       clone.dirty = false;
+      /* The recipe lives on the batch request, so lift its content fields onto
+         the clone before the batch itself is dropped. orderedInputIds stays as
+         remapped above, therefore it is deliberately not copied from the recipe. */
+      const recipe = node.activeBatch?.request || node.attempt?.request || null;
+      if (recipe) {
+        for (const field of ['prompt', 'profileId', 'provider', 'ratio', 'resolution', 'quality']) {
+          if (recipe[field] !== undefined && recipe[field] !== null) clone[field] = recipe[field];
+        }
+      }
       clone.activeBatch = null;
       clone.attempt = null;
       clone.primaryResultId = '';

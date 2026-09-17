@@ -8,8 +8,8 @@ services:
     volumes:
       - ./data:/app/data
       - ./storage:/app/storage
-      # LibTV / Lovart 适配器需要容器内可访问本机的 CLI 与适配脚本。
-      # 只有同时使用这两个平台时才需要取消注释，并按你的实际路径调整；
-      # 对应的 IMAGE_HUB_LIBTV_CLI / IMAGE_HUB_LOVART_SKILL_SCRIPT 要指向容器内路径。
-      # - ${LIBTV_HOME:-$HOME/.libtv}:/opt/libtv:ro
-      # - ${LOVART_SKILL_HOME:-$HOME/.lovart}:/opt/lovart:ro
+      # LibTV / Lovart 执行器直接调用官方 skill 脚本，不需要安装任何外部 CLI。
+      # 把两个 skill 目录只读挂进容器，并让 IMAGE_HUB_LIBTV_SKILL_SCRIPTS /
+      # IMAGE_HUB_LOVART_SKILL_SCRIPT 指向容器内路径即可。
+      # - ${LIBTV_SKILL_HOME:-$HOME/libtv-skill}:/opt/libtv-skill:ro
+      # - ${LOVART_SKILL_HOME:-$HOME/lovart-api}:/opt/lovart-api:ro

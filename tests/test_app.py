@@ -23,7 +23,14 @@ def login(client: TestClient, username: str = "admin") -> str:
         follow_redirects=False,
     )
     assert response.status_code == 303
-    return token
+    # Logging in rotates the CSRF token, so the pre-login value is dead. Read
+    # the live token off an authenticated page instead.
+    return csrf_from(client.get("/projects").text)
+
+
+def csrf_from(html: str) -> str:
+    match = re.search(r'name="csrf" value="([^"]+)"', html)
+    return match.group(1) if match else ""
 
 
 def create_project(client: TestClient, token: str, name: str) -> str:
@@ -32,6 +39,21 @@ def create_project(client: TestClient, token: str, name: str) -> str:
     )
     assert response.status_code == 303
     return response.headers["location"].rsplit("/", 1)[-1]
+
+
+def create_member(username: str, display_name: str = "") -> User:
+    """建一个普通成员账号，密码沿用 bootstrap 管理员那份。"""
+    with SessionLocal() as session:
+        admin = session.query(User).filter_by(username="admin").one()
+        member = User(
+            username=username,
+            display_name=display_name,
+            password_hash=admin.password_hash,
+        )
+        session.add(member)
+        session.commit()
+        session.refresh(member)
+        return member
 
 
 def install_submission_race_gate(
@@ -261,16 +283,7 @@ def test_active_task_limit_applies_across_projects(monkeypatch):
     )
     monkeypatch.setattr("image_hub.web.get_profile", lambda _: profile)
     monkeypatch.setattr(settings, "max_active_tasks_per_user", 1)
-    with SessionLocal() as session:
-        admin = session.query(User).filter_by(username="admin").one()
-        session.add(
-            User(
-                username="limited-member",
-                display_name="额度成员",
-                password_hash=admin.password_hash,
-            )
-        )
-        session.commit()
+    create_member("limited-member", "额度成员")
     with TestClient(app) as client:
         token = login(client, "limited-member")
         first_project = create_project(client, token, "额度项目甲")
@@ -348,16 +361,7 @@ def test_concurrent_cross_project_submissions_respect_user_limit(monkeypatch):
     first_entered, release_first, second_attempted = install_submission_race_gate(
         monkeypatch, profile
     )
-    with SessionLocal() as session:
-        admin = session.query(User).filter_by(username="admin").one()
-        session.add(
-            User(
-                username="concurrent-member",
-                display_name="并发额度成员",
-                password_hash=admin.password_hash,
-            )
-        )
-        session.commit()
+    create_member("concurrent-member", "并发额度成员")
     with TestClient(app) as first_client, TestClient(app) as second_client:
         first_token = login(first_client, "concurrent-member")
         second_token = login(second_client, "concurrent-member")
@@ -466,6 +470,7 @@ def test_v1_workspace_contract_has_canvas_ports_without_legacy_surfaces():
         html = client.get(f"/projects/{project_id}").text
         script = client.get("/static/app.js").text
         stylesheet = client.get("/static/app.css").text
+        canvas_core = client.get("/static/canvas-core.js").text
 
         assert 'id="canvas-viewport"' in html
         assert 'id="canvas-upload"' in html
@@ -473,18 +478,20 @@ def test_v1_workspace_contract_has_canvas_ports_without_legacy_surfaces():
         assert f'href="/projects/{project_id}/history"' in html
         for forbidden in ("Agent", "模板市场", "generation-dock", "recent-panel", "lightbox"):
             assert forbidden not in html
-        assert "generation_request" in script
-        assert "generation_result" in script
+        # 3baff7b unified the separate request/result nodes into one generation
+        # node, so the v1 ports are now expressed through these symbols.
+        assert "core.GENERATION" in script
+        assert "core.batchResults" in script
         assert "orderedInputIds" in script
         assert "temporary-link" in script
         assert "pointercancel" in script
-        assert "request.orderedInputIds.push(sourceId)" in script
+        assert "node.orderedInputIds.push(ref)" in script
         assert "data.append('references'" in script
-        assert "for (const id of request.orderedInputIds" in script
+        assert "for (const ref of node?.orderedInputIds" in canvas_core
         assert "ImageHubResultActions" in script
         assert "generationId" in script and "artifactUrl" in script
-        assert ".result-node:hover .sentiment-actions" in stylesheet
-        assert ".result-node:focus-within .sentiment-actions" in stylesheet
+        assert ".sentiment-row" in stylesheet
+        assert ".sentiment-group button.selected" in stylesheet
 
 
 def test_public_profiles_expose_capabilities_but_not_api_secrets():
@@ -551,9 +558,13 @@ def test_admin_can_store_api_config_without_echoing_secret(monkeypatch):
             follow_redirects=False,
         )
         assert response.status_code == 303
+        # 8ab9491 rewrote the admin overview to show per-provider model counts,
+        # so the stored model label now surfaces on the provider config page.
         admin_html = client.get("/admin").text
-        assert "API · Studio Image" in admin_html
+        provider_html = client.get("/admin/providers").text
+        assert "Studio Image" in provider_html
         assert "server-only-test-key" not in admin_html
+        assert "server-only-test-key" not in provider_html
         project_id = create_project(client, token, "API 配置公开边界")
         workspace_html = client.get(f"/projects/{project_id}").text
         assert "Studio Image" in workspace_html

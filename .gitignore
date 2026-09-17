@@ -6,3 +6,5 @@ __pycache__/
 tests/.runtime/
 data/
 storage/
+server.log
+_backup_legacy/

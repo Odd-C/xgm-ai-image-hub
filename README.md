@@ -42,9 +42,34 @@ uv run uvicorn image_hub.app:app --host 0.0.0.0 --port 5190
 docker compose up -d --build
 ```
 
-Compose 默认挂载本机现有的 LibTV CLI 和 Lovart 适配脚本；如果部署到其他服务器，需按
-实际路径调整两个只读挂载。容器端口默认只绑定 `127.0.0.1`，应由公司内网反向代理提供
-HTTPS；不要直接把 5190 端口开放到公网。
+Compose 默认把两个 skill 目录只读挂载进容器；如果部署到其他服务器，需按实际路径调整两个
+挂载。容器端口默认只绑定 `127.0.0.1`，应由公司内网反向代理提供 HTTPS；不要直接把 5190
+端口开放到公网。
+
+## 配置执行器
+
+三个执行器都不需要额外安装可执行程序：
+
+| 执行器 | 依赖 | 需要的配置 |
+|---|---|---|
+| LibTV | 官方 `libtv-skill` 的 `scripts/` 目录 | `IMAGE_HUB_LIBTV_SKILL_SCRIPTS`、`IMAGE_HUB_LIBTV_ACCESS_KEY` |
+| Lovart | 官方 `lovart-api` 的 `agent_skill.py` | `IMAGE_HUB_LOVART_SKILL_SCRIPT`、`IMAGE_HUB_LOVART_ACCESS_KEY`／`SECRET_KEY` |
+| API | 无 | `IMAGE_HUB_OPENAI_IMAGE_*` |
+
+```env
+IMAGE_HUB_LIBTV_SKILL_SCRIPTS=/opt/libtv-skill/scripts
+IMAGE_HUB_LIBTV_ACCESS_KEY=your-access-key
+IMAGE_HUB_LOVART_SKILL_SCRIPT=/opt/lovart-api/scripts/agent_skill.py
+IMAGE_HUB_LOVART_ACCESS_KEY=ak_xxx
+IMAGE_HUB_LOVART_SECRET_KEY=sk_xxx
+```
+
+这两组凭据与脚本路径也可以在「管理后台 → 平台与模型」里填写，管理员保存后即可用「测试连接」
+验证（LibTV 会创建一次空会话，Lovart 只查询生成模式，都不会产生生成费用）。管理后台的取值
+优先于环境变量，且只以 `0600` 私有文件保存在服务端。
+
+skill 脚本由服务进程自己的 Python 解释器执行，因此 Windows 上不需要 `python3` 别名，也
+不需要把 skill 装进 `PATH`。
 
 ## 配置图像 API
 

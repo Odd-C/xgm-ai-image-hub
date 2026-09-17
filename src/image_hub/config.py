@@ -1,6 +1,18 @@
 from pathlib import Path
 
+from pydantic import field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+
+def _project_root() -> Path:
+    """Anchor relative paths to the repo root, not the process working directory.
+
+    ``.env`` and the launcher scripts treat paths as relative to the project, and
+    ``settings`` is imported before anything chdir()s. Resolving here keeps every
+    downstream path (storage, sqlite file) stable regardless of where the process
+    was started from or which directory a child process later runs in.
+    """
+    return Path(__file__).resolve().parents[2]
 
 
 class Settings(BaseSettings):
@@ -16,14 +28,23 @@ class Settings(BaseSettings):
     session_secret: str = "development-only-change-me"
     bootstrap_admin_username: str = "admin"
     bootstrap_admin_password: str = "change-me-now"
-    # 默认按当前用户的 home 目录解析，部署时用 IMAGE_HUB_LIBTV_CLI 覆盖。
-    libtv_cli: Path = Path.home() / ".libtv" / "libtv"
+    # LibTV：官方 agent-im skill 的 scripts 目录，以及 Bearer Access Key。
+    libtv_skill_scripts: Path = (
+        Path.home() / ".hermes" / "skills" / "creative" / "libtv-skill" / "scripts"
+    )
+    libtv_access_key: str = ""
+    libtv_im_base: str = "https://im.liblib.tv"
     lovart_access_key: str = ""
     lovart_secret_key: str = ""
     lovart_base_url: str = "https://lgw.lovart.ai"
     lovart_skill_script: Path = Path(
         Path.home() / ".hermes" / "skills" / "creative" / "lovart-api" / "scripts" / "agent_skill.py"
     )
+    # Lovart 的推理模式：fast（轻量单次）或 thinking（深度多步）。
+    lovart_thread_mode: str = "fast"
+    # 单次生成允许等待上游多久（秒）；Lovart 的视频/深度推理任务耗时较长。
+    lovart_chat_timeout_seconds: int = 1800
+    native_provider_probe_seconds: int = 45
     openai_image_api_key: str = ""
     openai_image_base_url: str = "https://ark.cn-beijing.volces.com/api/v3"
     openai_image_models: str = "doubao-seedream-5-0-pro-260628|Seedream 5.0 Pro"
@@ -32,6 +53,17 @@ class Settings(BaseSettings):
     worker_poll_seconds: float = 1.0
     worker_stale_minutes: int = 60
     provider_command_timeout_seconds: int = 900
+
+    @field_validator("storage_root")
+    @classmethod
+    def _anchor_storage_root(cls, value: Path) -> Path:
+        """Make storage_root absolute so provider subprocesses cannot reinterpret it.
+
+        Skill scripts run with ``cwd`` set to their own directory, so handing them a
+        relative ``--output-dir`` silently downloads artifacts *there* instead of
+        into the project — and any later ``Path(...).is_file()`` check fails too.
+        """
+        return value if value.is_absolute() else (_project_root() / value).resolve()
 
     @property
     def package_dir(self) -> Path:

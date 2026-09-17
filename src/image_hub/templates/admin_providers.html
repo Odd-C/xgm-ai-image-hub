@@ -8,17 +8,21 @@
   <div class="native-credential-grid">
     <form class="stack-form credential-card" action="/admin/providers/libtv/credentials" method="post">
       <input type="hidden" name="csrf" value="{{ csrf_token }}">
-      <header><div><h3>LibTV</h3><p>状态：{{ native_credentials.libtv_source }}</p></div><span class="status-badge {{ 'active' if native_credentials.has_libtv_token else '' }}">{{ '已配置' if native_credentials.has_libtv_token else native_credentials.libtv_source }}</span></header>
-      <label>LibTV Token<input name="libtv_token" type="password" maxlength="1000" placeholder="{{ '已配置；留空保持不变' if native_credentials.has_libtv_token else '输入 LibTV Token' }}" autocomplete="new-password"><small>凭据仅注入服务端 CLI 子进程，不写入 CLI 凭据文件。</small></label>
-      <fieldset class="credential-clear"><legend>清除管理值</legend><label><input name="clear_credentials" type="checkbox"> 清除管理后台保存的 LibTV Token</label><label><input name="confirm_clear" type="checkbox" value="clear-libtv"> 我确认清除；随后回退环境配置或 CLI 登录</label></fieldset>
+      <header><div><h3>LibTV</h3><p>凭据来源：{{ native_credentials.libtv_source }}<br>skill 脚本：{{ native_credentials.libtv_scripts_label }}</p></div><span class="status-badge {{ 'active' if native_credentials.has_libtv_token else '' }}">{{ '已配置' if native_credentials.has_libtv_token else native_credentials.libtv_source }}</span></header>
+      <label>Access Key<input name="libtv_token" type="password" maxlength="1000" placeholder="{{ '已配置；留空保持不变' if native_credentials.has_libtv_token else '输入 LibTV Access Key' }}" autocomplete="new-password"><small>注入 skill 子进程的 LIBTV_ACCESS_KEY；不写入磁盘。</small></label>
+      <label>skill 脚本目录<input name="libtv_scripts_dir" type="text" maxlength="500" placeholder="{{ native_credentials.libtv_scripts_placeholder }}"><small>指向 libtv-skill/scripts（需含 create_session.py）。留空则用环境配置。</small></label>
+      <div class="credential-check"><button class="secondary mini" type="submit" name="action" value="check">测试连接</button><span>只调用一次会话创建，不产生生成费用。</span></div>
+      <fieldset class="credential-clear"><legend>清除管理值</legend><label><input name="clear_credentials" type="checkbox"> 清除管理后台保存的 LibTV 凭据与脚本目录</label><label><input name="confirm_clear" type="checkbox" value="clear-libtv"> 我确认清除；随后回退环境配置</label></fieldset>
       <div class="form-actions"><button class="primary" type="submit">保存 LibTV 凭据</button></div>
     </form>
     <form class="stack-form credential-card" action="/admin/providers/lovart/credentials" method="post">
       <input type="hidden" name="csrf" value="{{ csrf_token }}">
-      <header><div><h3>Lovart</h3><p>状态：{{ native_credentials.lovart_source }}</p></div><span class="status-badge {{ 'active' if native_credentials.has_lovart_access_key and native_credentials.has_lovart_secret_key else '' }}">{{ '已配置' if native_credentials.has_lovart_access_key and native_credentials.has_lovart_secret_key else native_credentials.lovart_source }}</span></header>
+      <header><div><h3>Lovart</h3><p>凭据来源：{{ native_credentials.lovart_source }}<br>skill 脚本：{{ native_credentials.lovart_scripts_label }}</p></div><span class="status-badge {{ 'active' if native_credentials.has_lovart_access_key and native_credentials.has_lovart_secret_key else '' }}">{{ '已配置' if native_credentials.has_lovart_access_key and native_credentials.has_lovart_secret_key else native_credentials.lovart_source }}</span></header>
       <label>Access Key<input name="lovart_access_key" type="password" maxlength="1000" placeholder="{{ '已配置；留空保持不变' if native_credentials.has_lovart_access_key else '输入 Access Key' }}" autocomplete="new-password"></label>
       <label>Secret Key<input name="lovart_secret_key" type="password" maxlength="1000" placeholder="{{ '已配置；留空保持不变' if native_credentials.has_lovart_secret_key else '输入 Secret Key' }}" autocomplete="new-password"><small>两个字段必须成对更新；Base URL 继续使用服务端部署配置。</small></label>
-      <fieldset class="credential-clear"><legend>清除管理值</legend><label><input name="clear_credentials" type="checkbox"> 清除管理后台保存的 Lovart 凭据对</label><label><input name="confirm_clear" type="checkbox" value="clear-lovart"> 我确认清除；随后回退环境配置</label></fieldset>
+      <label>skill 脚本路径<input name="lovart_skill_script" type="text" maxlength="500" placeholder="{{ native_credentials.lovart_scripts_placeholder }}"><small>指向 lovart-api 的 agent_skill.py。留空则用环境配置。</small></label>
+      <div class="credential-check"><button class="secondary mini" type="submit" name="action" value="check">测试连接</button><span>只查询模式接口，不发起生成。</span></div>
+      <fieldset class="credential-clear"><legend>清除管理值</legend><label><input name="clear_credentials" type="checkbox"> 清除管理后台保存的 Lovart 凭据与脚本路径</label><label><input name="confirm_clear" type="checkbox" value="clear-lovart"> 我确认清除；随后回退环境配置</label></fieldset>
       <div class="form-actions"><button class="primary" type="submit">保存 Lovart 凭据</button></div>
     </form>
   </div>

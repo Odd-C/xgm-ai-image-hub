@@ -78,7 +78,15 @@
   function profileById(id) { return core.profileById(models, id); }
   function providerLabel(value) { return providerNames[value] || value || '平台'; }
   function comboValue(ratio, resolution) { return `${ratio}|${resolution}`; }
-  function combos(profile) { return profile ? profile.ratios.flatMap(ratio => profile.resolutions.map(resolution => ({ratio, resolution, value: comboValue(ratio, resolution)}))) : []; }
+  /* The server sends a per-ratio tier map for Lovart models (some ratios have no
+     4K). Fall back to the flat resolution list for providers that do not. */
+  function profileTiers(profile, ratio) {
+    if (!profile) return [];
+    const mapped = profile.tiers?.[ratio];
+    return Array.isArray(mapped) && mapped.length ? mapped : (profile.resolutions || []);
+  }
+  function combos(profile) { return profile ? profile.ratios.flatMap(ratio => profileTiers(profile, ratio).map(resolution => ({ratio, resolution, value: comboValue(ratio, resolution)}))) : []; }
+
   function nodeById(id) { return state.nodes.find(node => node.id === id); }
   function generationNodes() { return state.nodes.filter(core.isGenerationNode); }
   function worldPoint(clientX, clientY) { const rect = $('#canvas-viewport').getBoundingClientRect(); return {x: (clientX - rect.left - state.viewport.x) / state.viewport.zoom, y: (clientY - rect.top - state.viewport.y) / state.viewport.zoom}; }
@@ -252,7 +260,10 @@
   }
   function imageSettingsPickerMarkup(node, profile) {
     const isOpen = pickerOpen(node, 'image');
-    return `<div class="visual-picker image-settings-picker"><button type="button" class="selector-trigger" data-image-settings-trigger aria-expanded="${isOpen}" aria-haspopup="dialog" aria-controls="image-settings-${node.id}"><span>${escapeHtml(node.ratio)} · ${escapeHtml(node.resolution)}</span>${icons.chevron}</button><div class="selector-popover" id="image-settings-${node.id}" role="dialog" aria-label="图像设置" ${isOpen ? '' : 'hidden'}><header><strong>图像设置</strong><button type="button" data-close-picker aria-label="关闭图像设置">${icons.close}</button></header><section class="selector-section"><span>分辨率</span><div class="resolution-chips" role="radiogroup" aria-label="分辨率">${(profile?.resolutions || []).map(resolution => `<button type="button" role="radio" data-resolution-option="${escapeHtml(resolution)}" aria-checked="${resolution === node.resolution}">${escapeHtml(resolution)}</button>`).join('')}</div></section><section class="selector-section"><span>宽高比</span><div class="ratio-card-grid" role="radiogroup" aria-label="宽高比">${(profile?.ratios || []).map(ratio => `<button type="button" role="radio" data-ratio-option="${escapeHtml(ratio)}" aria-checked="${ratio === node.ratio}">${ratioPreview(ratio)}<span>${escapeHtml(ratio)}</span></button>`).join('')}</div></section></div></div>`;
+    /* The resolution chips reflect the *currently selected ratio*: a ratio the
+       upstream only publishes at 1K/2K must not offer a 4K button. */
+    const tiers = profileTiers(profile, node.ratio);
+    return `<div class="visual-picker image-settings-picker"><button type="button" class="selector-trigger" data-image-settings-trigger aria-expanded="${isOpen}" aria-haspopup="dialog" aria-controls="image-settings-${node.id}"><span>${escapeHtml(node.ratio)} · ${escapeHtml(node.resolution)}</span>${icons.chevron}</button><div class="selector-popover" id="image-settings-${node.id}" role="dialog" aria-label="图像设置" ${isOpen ? '' : 'hidden'}><header><strong>图像设置</strong><button type="button" data-close-picker aria-label="关闭图像设置">${icons.close}</button></header><section class="selector-section"><span>分辨率</span><div class="resolution-chips" role="radiogroup" aria-label="分辨率">${tiers.map(resolution => `<button type="button" role="radio" data-resolution-option="${escapeHtml(resolution)}" aria-checked="${resolution === node.resolution}">${escapeHtml(resolution)}</button>`).join('')}</div></section><section class="selector-section"><span>宽高比</span><div class="ratio-card-grid" role="radiogroup" aria-label="宽高比">${(profile?.ratios || []).map(ratio => `<button type="button" role="radio" data-ratio-option="${escapeHtml(ratio)}" aria-checked="${ratio === node.ratio}">${ratioPreview(ratio)}<span>${escapeHtml(ratio)}</span></button>`).join('')}</div></section></div></div>`;
   }
 
   function syncDirty(node) { const next = core.isDirty(node); const changed = next !== node.dirty; node.dirty = next; if (changed) syncDirtyUi(node); return changed; }
@@ -855,7 +866,20 @@
     node.ratio = chosen?.ratio || '1:1'; node.resolution = chosen?.resolution || '2K'; node.quality = profile.qualities?.includes(node.quality) ? node.quality : (profile.qualities?.[0] || 'standard');
     pickerProviders.set(node.id, profile.provider); const mapped = valid.some(item => item.value === old); syncDirty(node); closeActivePicker(); if (!mapped) toast('已切换为该模型支持的默认尺寸'); scheduleSave(); requestAnimationFrame(() => $(`[data-node-id="${node.id}"] [data-model-trigger]`)?.focus({preventScroll: true}));
   }
-  function selectImageSetting(node, field, value) { node[field] = value; syncDirty(node); closeActivePicker(); scheduleSave(); requestAnimationFrame(() => $(`[data-node-id="${node.id}"] [data-image-settings-trigger]`)?.focus({preventScroll: true})); }
+  function selectImageSetting(node, field, value) {
+    const profile = profileById(node.profileId);
+    node[field] = value;
+    /* Some models expose a narrower resolution set per ratio (gpt-image-2.5 has
+       no 4K for 1:3 / 3:1). Switching to such a ratio would otherwise leave the
+       node pinned to a tier the upstream does not publish, so coerce it onto the
+       first tier the new ratio actually supports. */
+    if (field === 'ratio') {
+      const tiers = profileTiers(profile, node.ratio);
+      if (tiers.length && !tiers.includes(node.resolution)) node.resolution = tiers[0];
+    }
+    syncDirty(node); closeActivePicker(); scheduleSave(); requestAnimationFrame(() => $(`[data-node-id="${node.id}"] [data-image-settings-trigger]`)?.focus({preventScroll: true}));
+  }
+
   /* Single click expands in place (and marks the primary result when the batch
      holds several images); double click is handled separately by the viewer.
      Expanding here is a user action, so it pins the card against the automatic

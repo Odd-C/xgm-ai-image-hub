@@ -1,3 +1,4 @@
+import json
 import re
 from datetime import datetime
 from math import ceil
@@ -23,6 +24,8 @@ from image_hub.models import AdminAuditEvent, Generation, Project, User, utcnow
 from image_hub.providers import (
     ProviderConfigError,
     model_profiles,
+    probe_libtv_connection,
+    probe_lovart_connection,
     public_api_config,
     public_native_credentials,
     recover_generation,
@@ -89,6 +92,27 @@ def _safe_error(generation: Generation) -> str:
     text = re.sub(r"https?://\S+", "[已隐藏地址]", generation.error_message)
     text = re.sub(r"(?i)(bearer|api[_ -]?key|token)\s*[:=]?\s*\S+", r"\1 [已隐藏]", text)
     return text[:180]
+
+
+def _safe_model_label(generation: Generation) -> str:
+    """Return a display label that never exposes server-side API routing.
+
+    Admin tables have to render labels for rows that may predate the labelling
+    migration, so a legacy API row can still carry the raw upstream model id in
+    ``model_label``. That value is server-only routing material, so it is
+    replaced whenever it matches the recorded upstream identity.
+    """
+    label = generation.model_label or ""
+    if generation.provider != "api":
+        return label
+    try:
+        snapshot = json.loads(generation.provider_snapshot_json or "{}")
+    except json.JSONDecodeError:
+        snapshot = {}
+    upstream_model = snapshot.get("upstream_model", "") if isinstance(snapshot, dict) else ""
+    if not label or label in {generation.model_id, upstream_model}:
+        return "API 模型"
+    return label
 
 
 def _admin_context(
@@ -298,6 +322,7 @@ def admin_overview(request: Request, session: Session = Depends(get_session)):
             recent_tasks=recent_tasks,
             provider_summary=provider_summary,
             safe_error=_safe_error,
+            safe_label=_safe_model_label,
         ),
     )
 
@@ -447,9 +472,13 @@ def change_user_role(
         raise HTTPException(422, "角色无效")
     if target.id == actor.id and role != "admin":
         raise HTTPException(409, "不能降级当前登录管理员")
-    if target.role == "admin" and target.is_active and role != "admin":
-        if _enabled_admin_count(session) <= 1:
-            raise HTTPException(409, "不能降级系统最后一个启用管理员")
+    if (
+        target.role == "admin"
+        and target.is_active
+        and role != "admin"
+        and _enabled_admin_count(session) <= 1
+    ):
+        raise HTTPException(409, "不能降级系统最后一个启用管理员")
     previous = target.role
     target.role = role
     if previous != role:
@@ -560,8 +589,10 @@ def admin_providers(request: Request, session: Session = Depends(get_session)):
 def configure_libtv_credentials(
     request: Request,
     libtv_token: str = Form(""),
+    libtv_scripts_dir: str = Form(""),
     clear_credentials: str = Form(""),
     confirm_clear: str = Form(""),
+    action: str = Form(""),
     csrf: str = Form(...),
     session: Session = Depends(get_session),
 ):
@@ -570,22 +601,42 @@ def configure_libtv_credentials(
     require_admin(admin)
     clearing = clear_credentials == "on"
     if clearing and confirm_clear != "clear-libtv":
-        _flash(request, "error", "清除 LibTV Token 需要再次明确确认")
+        _flash(request, "error", "清除 LibTV 配置需要再次明确确认")
         return _redirect("/admin/providers")
     try:
-        result = save_libtv_credentials(libtv_token, clear=clearing)
+        result = save_libtv_credentials(
+            libtv_token, libtv_scripts_dir, clear=clearing
+        )
     except ProviderConfigError as exc:
         _flash(request, "error", str(exc))
         return _redirect("/admin/providers")
-    action = (
+    if action == "check":
+        ok, message = probe_libtv_connection()
+        _audit(session, admin, "provider.libtv_checked", "provider", "libtv", message)
+        session.commit()
+        _flash(request, "success" if ok else "error", message)
+        return _redirect("/admin/providers")
+    summary = f"LibTV 配置{'已清除' if result == 'cleared' else '已更新' if result == 'saved' else '保持不变'}"
+    _audit(
+        session,
+        admin,
         "provider.libtv_credentials_cleared"
         if result == "cleared"
-        else "provider.libtv_credentials_saved"
+        else "provider.libtv_credentials_saved",
+        "provider",
+        "libtv",
+        summary,
     )
-    summary = f"LibTV 凭据{'已清除' if result == 'cleared' else '已更新' if result == 'saved' else '保持'}"
-    _audit(session, admin, action, "provider", "libtv", summary)
     session.commit()
-    _flash(request, "success", summary)
+    _flash(
+        request,
+        "success",
+        # 表单里所有字段都会被提交，密码框留空是"保持不变"。此时必须让用户
+        # 明确知道什么都没存，否则他会以为保存失败而反复点击。
+        "LibTV Access Key 未变化（输入框留空即保持不变）"
+        if result == "kept"
+        else summary,
+    )
     return _redirect("/admin/providers")
 
 
@@ -594,8 +645,10 @@ def configure_lovart_credentials(
     request: Request,
     lovart_access_key: str = Form(""),
     lovart_secret_key: str = Form(""),
+    lovart_skill_script: str = Form(""),
     clear_credentials: str = Form(""),
     confirm_clear: str = Form(""),
+    action: str = Form(""),
     csrf: str = Form(...),
     session: Session = Depends(get_session),
 ):
@@ -604,24 +657,43 @@ def configure_lovart_credentials(
     require_admin(admin)
     clearing = clear_credentials == "on"
     if clearing and confirm_clear != "clear-lovart":
-        _flash(request, "error", "清除 Lovart 凭据需要再次明确确认")
+        _flash(request, "error", "清除 Lovart 配置需要再次明确确认")
         return _redirect("/admin/providers")
     try:
         result = save_lovart_credentials(
-            lovart_access_key, lovart_secret_key, clear=clearing
+            lovart_access_key,
+            lovart_secret_key,
+            lovart_skill_script,
+            clear=clearing,
         )
     except ProviderConfigError as exc:
         _flash(request, "error", str(exc))
         return _redirect("/admin/providers")
-    action = (
+    if action == "check":
+        ok, message = probe_lovart_connection()
+        _audit(session, admin, "provider.lovart_checked", "provider", "lovart", message)
+        session.commit()
+        _flash(request, "success" if ok else "error", message)
+        return _redirect("/admin/providers")
+    summary = f"Lovart 配置{'已清除' if result == 'cleared' else '已更新' if result == 'saved' else '保持不变'}"
+    _audit(
+        session,
+        admin,
         "provider.lovart_credentials_cleared"
         if result == "cleared"
-        else "provider.lovart_credentials_saved"
+        else "provider.lovart_credentials_saved",
+        "provider",
+        "lovart",
+        summary,
     )
-    summary = f"Lovart 凭据{'已清除' if result == 'cleared' else '已更新' if result == 'saved' else '保持'}"
-    _audit(session, admin, action, "provider", "lovart", summary)
     session.commit()
-    _flash(request, "success", summary)
+    _flash(
+        request,
+        "success",
+        "Lovart 凭据未变化（输入框留空即保持不变）"
+        if result == "kept"
+        else summary,
+    )
     return _redirect("/admin/providers")
 
 
@@ -738,6 +810,7 @@ def admin_tasks(
             pages=max(1, ceil(total / per_page)),
             total=total,
             safe_error=_safe_error,
+            safe_label=_safe_model_label,
         ),
     )
 

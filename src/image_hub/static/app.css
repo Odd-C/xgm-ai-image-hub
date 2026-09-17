@@ -842,7 +842,9 @@ th { color: var(--tertiary); font-size: 10px; font-weight: 500; }
 .credential-card + .credential-card { border-left: 1px solid var(--line); }
 .credential-card > header { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; }
 .credential-card > header h3 { margin: 0; font-size: 13px; }
-.credential-card > header p { margin: 3px 0 0; color: var(--tertiary); font-size: 10px; }
+.credential-card > header p { margin: 3px 0 0; color: var(--tertiary); font-size: 10px; word-break: break-all; }
+.credential-check { display: flex; align-items: center; gap: 10px; }
+.credential-check span { color: var(--tertiary); font-size: 10px; }
 .credential-clear { display: grid; gap: 7px; margin: 2px 0 0; padding: 10px; border: 1px solid rgba(179,58,50,.18); border-radius: 6px; background: var(--red-soft); }
 .credential-clear legend { padding: 0 4px; color: var(--red); font-size: 10px; }
 .stack-form .credential-clear label { display: flex; align-items: flex-start; gap: 7px; color: var(--muted); }
