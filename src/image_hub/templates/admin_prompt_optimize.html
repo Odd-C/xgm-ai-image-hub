@@ -1,0 +1,46 @@
+{% extends "admin_base.html" %}
+{% block admin_title %}提示词优化{% endblock %}
+{% block admin_content %}
+<header class="page-heading"><div><span class="eyebrow">PROMPT OPTIMIZE</span><h1>提示词优化</h1><p>通过 skill 在生图前改写提示词：纯文本模式只做文本改写，Agent 视觉诊断模式额外读参考图；优化失败自动回落到原始提示词。</p></div></header>
+
+<section class="panel">
+  <div class="panel-heading"><div><h2>Skill 配置</h2><p>脚本路径与密钥只保存在服务端，页面不回显密钥明文。</p></div></div>
+  <form class="stack-form" action="/admin/prompt-optimize" method="post">
+    <input type="hidden" name="csrf" value="{{ csrf_token }}">
+    <label class="switch-label"><input type="checkbox" name="enabled" {% if config.enabled %}checked{% endif %}>启用提示词优化</label>
+    <label class="switch-label"><input type="checkbox" name="agent_enabled" {% if config.agent_enabled %}checked{% endif %}>启用 Agent 模式（带参考图的视觉诊断 + 改写）</label>
+    <label>skill 脚本<input name="script" type="text" maxlength="500" value="{{ config.script }}" placeholder="例如 /opt/skills/prompt-optimize/run.py"></label>
+    <label>参数模板<input name="args" type="text" maxlength="500" value="{{ config.args }}" placeholder="--prompt-file {prompt_file}"><small><code>{prompt_file}</code> 会被替换为临时提示词文件路径。</small></label>
+    <label>API Base URL<input name="api_base_url" type="text" maxlength="500" value="{{ config.api_base_url }}" placeholder="https://…（可选，留空用环境变量）"></label>
+    <label>API Key<input name="api_key" type="password" maxlength="1000" autocomplete="new-password" placeholder="{{ '已配置；留空保持不变' if config.has_api_key else '输入 API Key' }}"><small>{{ '已配置；留空不会覆盖。' if config.has_api_key else '仅写入服务端私有配置。' }}</small></label>
+    <label>模型<input name="model" type="text" maxlength="160" value="{{ config.model }}" placeholder="例如 gpt-4o"></label>
+    <label>Agent 模型<input name="agent_model" type="text" maxlength="160" value="{{ config.agent_model }}" placeholder="留空则复用主模型（上方「模型」）"><small>仅 Agent 模式的视觉诊断使用；留空表示复用上方「模型」字段。</small></label>
+    <label>超时（秒）<input name="timeout" type="number" min="5" max="600" value="{{ config.timeout }}"></label>
+    <div class="form-actions"><button class="primary" type="submit">保存配置</button></div>
+  </form>
+</section>
+
+<section class="panel">
+  <div class="panel-heading"><div><h2>配置自检</h2><p>打开开关前先跑一句样例，确认 CLI 参数模板对得上、skill 能正常返回。</p></div></div>
+  <form class="stack-form" action="/admin/prompt-optimize/test" method="post" enctype="multipart/form-data">
+    <input type="hidden" name="csrf" value="{{ csrf_token }}">
+    <label>样例提示词<textarea name="sample" maxlength="2000" placeholder="白色陶瓷马克杯，跨境主图，干净背景"></textarea><small>留空则用内置默认样例。</small></label>
+    <label>模式<select name="mode"><option value="">自动（传图→agent，否则 optimize）</option><option value="optimize">optimize（纯文本）</option><option value="agent">agent（带视觉）</option></select><small>留空时若传了参考图按 agent，否则按 optimize。</small></label>
+    <label>参考图<small>传图才会验 Agent 的视觉通路；不传只验纯文本模式。</small><input type="file" name="sample_image" accept="image/png,image/jpeg,image/webp"></label>
+    <div class="form-actions"><button class="secondary" type="submit">运行自检</button></div>
+  </form>
+</section>
+
+<section class="panel">
+  <div class="panel-heading"><div><h2>素材保留期</h2><p>到期素材由后台周期清理，不影响已生成的图片（生成记录自带副本）。</p></div></div>
+  <dl class="retention-facts">
+    <div><dt>保留天数</dt><dd>{{ asset_retention_days }} 天</dd></div>
+    <div><dt>清理间隔</dt><dd>{{ asset_purge_interval_minutes }} 分钟</dd></div>
+    <div><dt>当前素材存量</dt><dd>{{ live_assets }} 个</dd></div>
+  </dl>
+  <form action="/admin/assets/purge" method="post">
+    <input type="hidden" name="csrf" value="{{ csrf_token }}">
+    <div class="form-actions" style="padding: 0 16px 16px;"><button class="secondary" type="submit">立即清理过期素材</button></div>
+  </form>
+</section>
+{% endblock %}

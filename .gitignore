@@ -1,0 +1,13 @@
+.env
+.venv/
+__pycache__/
+.pytest_cache/
+.ruff_cache/
+tests/.runtime/
+node_modules/
+test-results/
+playwright-report/
+data/
+storage/
+server.log
+_backup_legacy/

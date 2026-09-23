@@ -1,0 +1,30 @@
+{% extends "base.html" %}
+{% block title %}项目 · AI Image Hub{% endblock %}
+{% block body %}
+<header class="topbar">
+  <a class="brand" href="/projects"><span>AI Image Hub</span></a>
+  <nav><span class="nav-tab active">项目</span><a class="nav-canvas" href="{{ canvas_url }}">画布</a><a href="/assets">素材库</a>{% if user.role in admin_roles %}<a href="/admin">系统管理</a>{% endif %}</nav>
+  <div class="account"><span>{{ user.display_name or user.username }}{% if user.department %} · {{ user.department }}{% endif %}</span>{% include "_theme_toggle.html" %}<a class="text-button" href="/account">账号设置</a><form method="post" action="/logout"><input type="hidden" name="csrf" value="{{ csrf_token }}"><button class="text-button">退出</button></form></div>
+</header>
+<main class="projects-shell">
+  <section class="projects-hero">
+    <div><span class="eyebrow">PROJECTS</span><h1>我的项目</h1><p>一个项目对应一张独立画布，提示词、素材、结果和布局互不混合。</p></div>
+    <form action="/projects" method="post" class="new-project-form"><input type="hidden" name="csrf" value="{{ csrf_token }}"><input name="name" maxlength="160" required placeholder="输入新项目名称"><button class="primary">新建项目</button></form>
+  </section>
+  {% if projects %}
+  <section class="project-grid">
+    {% for project in projects %}
+    <article class="project-card">
+      <a href="/projects/{{ project.id }}" class="project-cover">
+        {% set latest = project.generations[0] if project.generations else none %}
+        {% if latest and latest.artifact_storage_key %}<img src="/generations/{{ latest.id }}/artifact" alt="{{ project.name }} 最近结果">{% else %}<span>R</span>{% endif %}
+      </a>
+      <div class="project-card-body"><div><h2><a href="/projects/{{ project.id }}">{{ project.name }}</a></h2><p>{{ project.generations | length }} 次生成 · {{ project.updated_at.strftime('%Y-%m-%d %H:%M') }}</p></div></div>
+    </article>
+    {% endfor %}
+  </section>
+  {% else %}
+  <section class="projects-empty"><span>＋</span><h2>创建第一个项目</h2><p>项目创建后会自动拥有一张独立画布。</p></section>
+  {% endif %}
+</main>
+{% endblock %}

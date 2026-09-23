@@ -1,0 +1,12 @@
+{
+  "name": "image-hub-e2e",
+  "private": true,
+  "description": "前端 E2E 保护层（真实服务 + 真实浏览器），补 pytest 覆盖不到的画布节点行为",
+  "scripts": {
+    "test:e2e": "playwright test",
+    "test:e2e:report": "playwright show-report"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.63.0"
+  }
+}

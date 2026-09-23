@@ -1,0 +1,15 @@
+{% extends "base.html" %}
+{% block title %}登录 · AI Image Hub{% endblock %}
+{% block body %}
+<main class="login-shell">
+  <form class="login-card" method="post" action="/login">
+    <input type="hidden" name="csrf" value="{{ csrf_token }}">
+    <h2>登录工作台</h2>
+    {% if error %}<p class="error-banner">{{ error }}</p>{% endif %}
+    <label>账号<input name="username" autocomplete="username" autofocus required></label>
+    <label>密码<input type="password" name="password" autocomplete="current-password" required></label>
+    <button class="primary" type="submit">进入工作台</button>
+    <small>仅供公司内部授权用户使用</small>
+  </form>
+</main>
+{% endblock %}

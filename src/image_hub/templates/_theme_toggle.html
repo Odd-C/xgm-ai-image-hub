@@ -1,0 +1,15 @@
+<button type="button" class="theme-toggle" data-theme-toggle aria-label="切换主题（浅色 / 深色 / 跟随系统）" title="主题：浅色 / 深色 / 跟随系统" onclick="window.cycleImageHubTheme()">
+  <span class="theme-toggle-icon" aria-hidden="true">◐</span>
+  <span class="theme-toggle-label" data-theme-label></span>
+</button>
+<script>
+(function () {
+  var label = document.querySelector('[data-theme-label]');
+  if (label) {
+    try {
+      var v = localStorage.getItem('image-hub-theme') || 'light';
+      label.textContent = v === 'system' ? '跟随系统' : (v === 'dark' ? '深色' : '浅色');
+    } catch (e) { label.textContent = '浅色'; }
+  }
+})();
+</script>

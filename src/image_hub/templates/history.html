@@ -1,0 +1,24 @@
+{% extends "base.html" %}
+{% block title %}历史 · {{ project.name }} · AI Image Hub{% endblock %}
+{% block body %}
+<header class="topbar">
+  <a class="brand" href="/projects"><span>AI Image Hub</span></a>
+  <nav><a class="nav-canvas" href="{{ canvas_url }}">画布</a>{% if user.role in admin_roles %}<a href="/admin">管理</a>{% endif %}</nav>
+  <div class="account"><span>{{ user.display_name or user.username }}</span><a class="text-button" href="/account">账号设置</a><form method="post" action="/logout"><input type="hidden" name="csrf" value="{{ csrf_token }}"><button class="text-button">退出</button></form></div>
+</header>
+<main class="history-shell" data-project-id="{{ project.id }}">
+  <div class="history-header"><div><span class="eyebrow">HISTORY</span><h1>生成历史</h1><p>不可变记录，用于查找、打开和继续迭代。</p></div></div>
+  <div class="filters" aria-label="历史筛选">
+    <label>项目<select id="history-project">{% for item in projects %}<option value="{{ item.id }}" {% if item.id == project.id %}selected{% endif %}>{{ item.name }}</option>{% endfor %}</select></label>
+    <label>关键词<input id="history-search" type="search" placeholder="搜索提示词"></label>
+    <label>状态<select id="history-status"><option value="">全部状态</option><option value="queued">排队中</option><option value="running">生成中</option><option value="succeeded">已完成</option><option value="failed">失败</option><option value="recovery_required">需要恢复</option></select></label>
+    <label>平台 · 模型<select id="history-model"><option value="|">全部平台与模型</option>{% for profile in profiles %}<option value="{{ profile.provider }}|{{ profile.id.split(':', 1)[1] }}">{{ profile.provider|upper }} · {{ profile.label }}</option>{% endfor %}</select></label>
+    <label>评价<select id="history-sentiment"><option value="">全部评价</option><option value="adopted">采用</option><option value="satisfied">满意</option><option value="dissatisfied">不满意</option></select></label>
+  </div>
+  <p class="history-count" id="history-count" role="status"></p>
+  <section class="history-grid" id="history-grid"></section>
+</main>
+<div class="toast" id="toast" aria-live="polite"></div>
+<script>window.IMAGE_HUB_PROJECT_ID = {{ project.id | tojson }};</script>
+<script src="/static/history.js?v=link-select-delete-v1" defer></script>
+{% endblock %}

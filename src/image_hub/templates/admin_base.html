@@ -1,0 +1,32 @@
+{% extends "base.html" %}
+{% block title %}{% block admin_title %}系统管理{% endblock %} · AI Image Hub{% endblock %}
+{% block body %}
+<a class="skip-link" href="#admin-content">跳到管理内容</a>
+<div class="admin-layout" id="admin-layout">
+  <aside class="admin-sidebar" id="admin-sidebar" aria-label="系统管理导航">
+    <a class="admin-brand" href="/admin"><span><b>AI Image Hub</b><small>系统管理</small></span></a>
+    <nav>
+      <a href="/admin" {% if active_admin_page == 'overview' %}aria-current="page"{% endif %}>总览</a>
+      <a href="/admin/users" {% if active_admin_page == 'users' %}aria-current="page"{% endif %}>账号</a>
+      <a href="/admin/providers" {% if active_admin_page == 'providers' %}aria-current="page"{% endif %}>平台与模型</a>
+      <a href="/admin/prompt-optimize" {% if active_admin_page == 'prompt_optimize' %}aria-current="page"{% endif %}>提示词优化</a>
+      <a href="/admin/tasks" {% if active_admin_page == 'tasks' %}aria-current="page"{% endif %}>任务与恢复</a>
+      <a href="/admin/audit" {% if active_admin_page == 'audit' %}aria-current="page"{% endif %}>审计记录</a>
+    </nav>
+    <div class="admin-sidebar-foot"><a href="/account">账号设置</a><form method="post" action="/logout"><input type="hidden" name="csrf" value="{{ csrf_token }}"><button type="submit">退出</button></form><small>{{ user.display_name or user.username }} · {{ user.role | role_label }}</small></div>
+  </aside>
+  <header class="admin-topbar">
+    <a class="brand admin-topbar-brand" href="/admin"><span>系统管理</span></a>
+    <nav aria-label="全局导航"><a class="nav-canvas" href="{{ canvas_url }}">画布</a></nav>
+    {% include "_theme_toggle.html" %}
+    <button class="admin-menu-button" id="admin-menu-button" type="button" aria-controls="admin-sidebar" aria-expanded="false"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 6h16M4 12h16M4 18h16"/></svg><span>菜单</span></button>
+  </header>
+  <div class="admin-scrim" id="admin-scrim" hidden></div>
+  <main class="admin-content" id="admin-content" tabindex="-1">
+    {% if flash %}<div class="notice notice-toast {{ flash.kind }}" role="status">{{ flash.message }}</div>{% endif %}
+    {% block admin_content %}{% endblock %}
+  </main>
+</div>
+<script src="/static/admin.js?v=link-select-delete-v1" defer></script>
+{% block admin_scripts %}{% endblock %}
+{% endblock %}
