@@ -1,32 +1,104 @@
 {% extends "admin_base.html" %}
 {% block admin_title %}平台与模型{% endblock %}
 {% block admin_content %}
-<header class="page-heading"><div><span class="eyebrow">PROVIDERS</span><h1>平台与模型</h1><p>浏览器只显示公开能力；凭据和真实执行路由始终保存在服务端。</p></div></header>
+<header class="page-heading"><div><span class="eyebrow">PROVIDERS</span><h1>平台与模型</h1><p>在这里授权平台账号、配置可用模型。凭据只保存在服务端。</p></div></header>
 <section class="provider-card-grid">{% for card in provider_cards %}<article class="provider-card"><header><span class="status-dot {{ 'on' if card.available }}"></span><h2>{{ card.label }}</h2><span class="status-badge {{ 'active' if card.available else 'inactive' }}">{{ '可用' if card.available else '未配置' }}</span></header><strong>{{ card.enabled_count }} <small>/ {{ card.model_count }} 个公开模型</small></strong><p>比例 {{ card.ratios|join(' · ') or '—' }}<br>分辨率 {{ card.resolutions|join(' · ') or '—' }} · 最多 {{ card.max_references }} 张参考图</p></article>{% endfor %}</section>
 <section class="panel native-credentials-panel">
-  <div class="panel-heading"><div><h2>平台凭据</h2><p>仅供服务端执行使用；页面只显示安全来源，不回显任何凭据。</p></div></div>
+  <div class="panel-heading"><div><h2>平台凭据</h2><p>授权平台账号，或改用下方账号池管理多个号。</p></div></div>
   <div class="native-credential-grid">
-    <form class="stack-form credential-card" action="/admin/providers/libtv/credentials" method="post">
+    <form class="stack-form credential-card" action="/admin/providers/libtv/check" method="post">
       <input type="hidden" name="csrf" value="{{ csrf_token }}">
-      <header><div><h3>LibTV</h3><p>凭据来源：{{ native_credentials.libtv_source }}<br>skill 脚本：{{ native_credentials.libtv_scripts_label }}</p></div><span class="status-badge {{ 'active' if native_credentials.has_libtv_token else '' }}">{{ '已配置' if native_credentials.has_libtv_token else native_credentials.libtv_source }}</span></header>
-      <label>Access Key<input name="libtv_token" type="password" maxlength="1000" placeholder="{{ '已配置；留空保持不变' if native_credentials.has_libtv_token else '输入 LibTV Access Key' }}" autocomplete="new-password"><small>注入 skill 子进程的 LIBTV_ACCESS_KEY；不写入磁盘。</small></label>
-      <label>skill 脚本目录<input name="libtv_scripts_dir" type="text" maxlength="500" placeholder="{{ native_credentials.libtv_scripts_placeholder }}"><small>指向 libtv-skill/scripts（需含 create_session.py）。留空则用环境配置。</small></label>
-      <div class="credential-check"><button class="secondary mini" type="submit" name="action" value="check">测试连接</button><span>只调用一次会话创建，不产生生成费用。</span></div>
-      <fieldset class="credential-clear"><legend>清除管理值</legend><label><input name="clear_credentials" type="checkbox"> 清除管理后台保存的 LibTV 凭据与脚本目录</label><label><input name="confirm_clear" type="checkbox" value="clear-libtv"> 我确认清除；随后回退环境配置</label></fieldset>
-      <div class="form-actions"><button class="primary" type="submit">保存 LibTV 凭据</button></div>
+      <header><div><h3>LibTV</h3><p>授权你的 LibTV 账号。</p></div><span class="status-badge {{ 'active' if native_credentials.libtv.connected else 'inactive' }}">{{ '已授权' if native_credentials.libtv.connected else '未授权' }}</span></header>
+      {% if native_credentials.libtv.connected %}
+      <p>授权有效期至 <strong>{{ native_credentials.libtv.secret_expires_label or '未知' }}</strong>{% if native_credentials.libtv.secret_days_left is not none %}（剩余 {{ native_credentials.libtv.secret_days_left }} 天）{% endif %}，到期后需要重新授权。</p>
+      {% else %}
+      <p>尚未授权，需要先在 LibTV 完成授权。</p>
+      {% endif %}
+      {% if account_pools.libtv.accounts %}
+      <label>作用于哪个账号<select name="account_id">{% for account in account_pools.libtv.accounts %}<option value="{{ account.id }}">{{ loop.index }} · {{ account.label or '（未命名）' }}{% if account.is_current %} · 当前{% endif %}{% if not account.credentials_ready %} · 未连接{% endif %}{% if account.exhausted %} · 额度耗尽{% elif not account.enabled %} · 已停用{% endif %}</option>{% endfor %}</select><small>连接、断开、测试只作用于选中的账号。</small></label>
+      {% endif %}
+      <div class="credential-check">
+        {% if not native_credentials.libtv.connected %}<button class="primary mini" type="submit" formaction="/admin/providers/libtv/connect">连接 LibTV</button>{% endif %}
+        <button class="secondary mini" type="submit">测试连接</button>
+        {% if native_credentials.libtv.connected %}<button class="secondary mini" type="submit" formaction="/admin/providers/libtv/models/refresh">刷新模型目录</button>{% endif %}
+      </div>
+      <label>粘贴授权回调地址（远程使用时）<input name="callback_url" type="text" maxlength="2000" placeholder="http://localhost:8000/admin/providers/libtv/callback?code=...&state=..." autocomplete="off"><small>授权后页面打不开时，把地址栏的完整 URL 粘贴到这里。</small></label>
+      <div class="form-actions"><button class="primary" type="submit" formaction="/admin/providers/libtv/paste">完成授权</button>
+      {% if native_credentials.libtv.connected %}<button class="secondary" type="submit" formaction="/admin/providers/libtv/disconnect">断开授权</button>{% endif %}
+      </div>
+      <fieldset class="credential-clear"><legend>断开确认</legend><label><input name="confirm_clear" type="checkbox" value="disconnect-libtv"> 我确认断开 LibTV 授权并删除服务端凭据</label></fieldset>
     </form>
     <form class="stack-form credential-card" action="/admin/providers/lovart/credentials" method="post">
       <input type="hidden" name="csrf" value="{{ csrf_token }}">
-      <header><div><h3>Lovart</h3><p>凭据来源：{{ native_credentials.lovart_source }}<br>skill 脚本：{{ native_credentials.lovart_scripts_label }}</p></div><span class="status-badge {{ 'active' if native_credentials.has_lovart_access_key and native_credentials.has_lovart_secret_key else '' }}">{{ '已配置' if native_credentials.has_lovart_access_key and native_credentials.has_lovart_secret_key else native_credentials.lovart_source }}</span></header>
-      <label>Access Key<input name="lovart_access_key" type="password" maxlength="1000" placeholder="{{ '已配置；留空保持不变' if native_credentials.has_lovart_access_key else '输入 Access Key' }}" autocomplete="new-password"></label>
-      <label>Secret Key<input name="lovart_secret_key" type="password" maxlength="1000" placeholder="{{ '已配置；留空保持不变' if native_credentials.has_lovart_secret_key else '输入 Secret Key' }}" autocomplete="new-password"><small>两个字段必须成对更新；Base URL 继续使用服务端部署配置。</small></label>
-      <label>skill 脚本路径<input name="lovart_skill_script" type="text" maxlength="500" placeholder="{{ native_credentials.lovart_scripts_placeholder }}"><small>指向 lovart-api 的 agent_skill.py。留空则用环境配置。</small></label>
-      <div class="credential-check"><button class="secondary mini" type="submit" name="action" value="check">测试连接</button><span>只查询模式接口，不发起生成。</span></div>
-      <fieldset class="credential-clear"><legend>清除管理值</legend><label><input name="clear_credentials" type="checkbox"> 清除管理后台保存的 Lovart 凭据与脚本路径</label><label><input name="confirm_clear" type="checkbox" value="clear-lovart"> 我确认清除；随后回退环境配置</label></fieldset>
+      <header><div><h3>Lovart</h3><p>填写你的 Lovart 密钥。</p></div><span class="status-badge {{ 'active' if native_credentials.lovart.connected else 'inactive' }}">{{ '已配置' if native_credentials.lovart.connected else '未配置' }}</span></header>
+      {% if account_pools.lovart.accounts %}
+      <label>作用于哪个账号<select name="account_id">{% for account in account_pools.lovart.accounts %}<option value="{{ account.id }}">{{ loop.index }} · {{ account.label or '（未命名）' }}{% if account.is_current %} · 当前{% endif %}{% if not account.credentials_ready %} · 未配置{% endif %}{% if account.exhausted %} · 额度耗尽{% elif not account.enabled %} · 已停用{% endif %}</option>{% endfor %}</select><small>每个账号各存一对密钥，保存与测试只作用于选中的账号。</small></label>
+      {% endif %}
+      <label>Access Key<input name="lovart_access_key" type="password" maxlength="1000" placeholder="{{ '已配置；留空保持不变' if native_credentials.lovart.credentials_ready else '输入 Access Key' }}" autocomplete="new-password"></label>
+      <label>Secret Key<input name="lovart_secret_key" type="password" maxlength="1000" placeholder="{{ '已配置；留空保持不变' if native_credentials.lovart.credentials_ready else '输入 Secret Key' }}" autocomplete="new-password"><small>两个字段必须成对填写。</small></label>
+      <div class="credential-check"><button class="secondary mini" type="submit" name="action" value="check">测试连接</button><span>只验证密钥，不发起生成。</span></div>
+      <fieldset class="credential-clear"><legend>清除密钥</legend><label><input name="clear_credentials" type="checkbox"> 清除已保存的 Lovart 密钥</label><label><input name="confirm_clear" type="checkbox" value="clear-lovart"> 我确认清除</label></fieldset>
       <div class="form-actions"><button class="primary" type="submit">保存 Lovart 凭据</button></div>
     </form>
   </div>
 </section>
-<section class="panel provider-config-panel"><div class="panel-heading"><div><h2>API 中转配置</h2><p>保留 HTTPS、内网 allowlist、DNS rebind 校验与原子 0600 私有文件。</p></div></div><form id="provider-form" class="stack-form" action="/admin/providers/api" method="post"><input type="hidden" name="csrf" value="{{ csrf_token }}"><input type="hidden" name="models" id="serialized-models"><div class="provider-credentials"><label>Base URL<input name="base_url" type="url" required maxlength="500" placeholder="{{ '已配置；保存时请重新输入完整地址' if api_config.has_base_url else 'https://api.example.com/v1' }}" autocomplete="off"><small>已保存页面不回显完整地址。</small></label><label>API Key<input name="api_key" type="password" maxlength="1000" placeholder="{{ '已配置；留空保持不变' if api_config.has_api_key else '输入服务端 API Key' }}" autocomplete="new-password"><small>{{ '已配置；留空不会覆盖。' if api_config.has_api_key else '仅写入服务端私有配置。' }}</small></label></div><div class="model-editor-heading"><div><h3>模型行</h3><p>真实服务端模型 ID 只在本次管理员编辑表单内输入，保存后不回显。</p></div><button class="secondary" type="button" id="add-model-row">添加模型行</button></div><div id="model-rows" class="model-rows">{% for profile in api_profiles %}<fieldset class="model-row"><legend>API 模型 {{ loop.index }}</legend><button type="button" class="remove-model-row" aria-label="删除模型行">删除</button><div class="model-row-grid"><label>显示名称<input data-field="label" required maxlength="160" value="{{ profile.label }}"></label><label>服务端模型 ID<input data-field="model-id" required maxlength="120" placeholder="保存时重新填写执行模型 ID" autocomplete="off"><small>当前公开安全 ID：{{ profile.id }}</small></label><label>最大参考图数<input data-field="max-references" type="number" required min="0" max="14" value="{{ profile.max_references }}"></label><label>质量<select data-field="quality"><option value="standard">standard</option></select></label></div><div class="capability-options"><fieldset><legend>比例（多选）</legend>{% for value in ['1:1','4:3','3:4','16:9','9:16'] %}<label><input data-field="ratio" type="checkbox" value="{{ value }}" {% if value in profile.ratios %}checked{% endif %}>{{ value }}</label>{% endfor %}</fieldset><fieldset><legend>分辨率（多选）</legend>{% for value in ['1K','2K','4K'] %}<label><input data-field="resolution" type="checkbox" value="{{ value }}" {% if value in profile.resolutions %}checked{% endif %}>{{ value }}</label>{% endfor %}</fieldset><label class="switch-label"><input data-field="enabled" type="checkbox" {% if profile.enabled %}checked{% endif %}>启用</label></div></fieldset>{% endfor %}</div><div class="form-actions"><button class="primary" type="submit">保存 API 配置</button></div></form></section>
-<template id="model-row-template"><fieldset class="model-row"><legend>新模型</legend><button type="button" class="remove-model-row" aria-label="删除模型行">删除</button><div class="model-row-grid"><label>显示名称<input data-field="label" required maxlength="160"></label><label>服务端模型 ID<input data-field="model-id" required maxlength="120" autocomplete="off"></label><label>最大参考图数<input data-field="max-references" type="number" required min="0" max="14" value="4"></label><label>质量<select data-field="quality"><option value="standard">standard</option></select></label></div><div class="capability-options"><fieldset><legend>比例（多选）</legend>{% for value in ['1:1','4:3','3:4','16:9','9:16'] %}<label><input data-field="ratio" type="checkbox" value="{{ value }}" {% if value == '1:1' %}checked{% endif %}>{{ value }}</label>{% endfor %}</fieldset><fieldset><legend>分辨率（多选）</legend>{% for value in ['1K','2K','4K'] %}<label><input data-field="resolution" type="checkbox" value="{{ value }}" {% if value == '2K' %}checked{% endif %}>{{ value }}</label>{% endfor %}</fieldset><label class="switch-label"><input data-field="enabled" type="checkbox" checked>启用</label></div></fieldset></template>
+<section class="panel native-credentials-panel">
+  <div class="panel-heading"><div><h2>平台账号池</h2><p>按顺序依次使用，某个号额度不足时自动切到下一个。</p></div></div>
+  <div class="native-credential-grid">
+    {% for pool in account_pools.values() %}
+    <article class="credential-card">
+      <header><div><h3>{{ pool.label }} 账号池</h3><p>你和你创建的账号共用这一个池。</p></div><span class="status-badge {{ 'active' if pool.accounts else 'inactive' }}">{{ pool.accounts|length }} 个账号</span></header>
+      {% if pool.accounts %}
+      <table class="pool-table">
+        <thead><tr><th>顺序</th><th>标签</th><th>状态</th><th>凭据</th><th>最近错误</th><th>操作</th></tr></thead>
+        <tbody>
+          {% for account in pool.accounts %}
+          <tr>
+            <td>{{ loop.index }}{% if account.is_current %}<br><span class="status-badge active">当前</span>{% endif %}</td>
+            <td>{{ account.label or '（未命名）' }}</td>
+            <td>{% if account.exhausted %}<span class="status-badge inactive">额度耗尽</span>{% elif not account.enabled %}<span class="status-badge inactive">已停用</span>{% else %}<span class="status-badge active">可用</span>{% endif %}</td>
+            <td>{{ '已连接' if account.credentials_ready else '未连接' }}</td>
+            <td class="pool-reason">{{ account.reason[:120] or '—' }}</td>
+            <td class="pool-actions">
+              <form action="/admin/providers/accounts/move" method="post"><input type="hidden" name="csrf" value="{{ csrf_token }}"><input type="hidden" name="account_id" value="{{ account.id }}"><button class="secondary mini" type="submit" name="direction" value="up">上移</button><button class="secondary mini" type="submit" name="direction" value="down">下移</button></form>
+              <form action="/admin/providers/accounts/update" method="post"><input type="hidden" name="csrf" value="{{ csrf_token }}"><input type="hidden" name="account_id" value="{{ account.id }}"><input name="label" maxlength="120" value="{{ account.label }}" placeholder="标签"><button class="secondary mini" type="submit" name="action" value="rename">改名</button>{% if account.enabled %}<button class="secondary mini" type="submit" name="action" value="disable">停用</button>{% else %}<button class="secondary mini" type="submit" name="action" value="enable">启用</button>{% endif %}</form>
+              {% if account.exhausted %}<form action="/admin/providers/accounts/clear_exhausted" method="post"><input type="hidden" name="csrf" value="{{ csrf_token }}"><input type="hidden" name="account_id" value="{{ account.id }}"><button class="secondary mini" type="submit">清除额度耗尽</button></form>{% endif %}
+              <form action="/admin/providers/accounts/delete" method="post"><input type="hidden" name="csrf" value="{{ csrf_token }}"><input type="hidden" name="account_id" value="{{ account.id }}"><label class="confirm-inline"><input name="confirm_clear" type="checkbox" value="delete-provider-account"> 确认</label><button class="secondary mini" type="submit">移出池</button></form>
+            </td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+      {% else %}
+      <p>还没有账号，当前仍使用上面的单账号配置。</p>
+      {% endif %}
+      <form class="stack-form" action="/admin/providers/accounts/add" method="post"><input type="hidden" name="csrf" value="{{ csrf_token }}"><input type="hidden" name="provider" value="{{ pool.id }}"><label>新增账号标签<input name="label" maxlength="120" placeholder="例如 主号 / 备用"></label><div class="form-actions"><button class="primary mini" type="submit">加入账号池</button></div></form>
+      <p><small>加入后回到上方 {{ pool.label }} 卡片，选中它再完成凭据配置；用哪个号由顺序决定，可用「上移 / 下移」调整。</small></p>
+    </article>
+    {% endfor %}
+  </div>
+</section>
+<section class="panel provider-config-panel">{% set api_route_names = api_routes | map(attribute='name') | list %}<div class="panel-heading"><div><h2>API 中转配置</h2><p>接入自有的中转 API。</p></div></div><form id="provider-form" class="stack-form" action="/admin/providers/api" method="post"><input type="hidden" name="csrf" value="{{ csrf_token }}"><input type="hidden" name="models" id="serialized-models"><div class="provider-credentials"><label>Base URL<input name="base_url" type="url" required maxlength="500" placeholder="{{ '已配置；保存时请重新输入完整地址' if api_config.has_base_url else 'https://api.example.com/v1' }}" autocomplete="off"><small>已保存的地址不回显，修改时请重新输入完整地址。</small></label><label>API Key<input name="api_key" type="password" maxlength="1000" placeholder="{{ '已配置；留空保持不变' if api_config.has_api_key else '输入服务端 API Key' }}" autocomplete="new-password"><small>{{ '已配置；留空不会覆盖。' if api_config.has_api_key else '只保存在服务端。' }}</small></label></div><div class="model-editor-heading"><div><h3>API 路由</h3><p>这里登记可用的中转 API；每个模型在下方下拉里手工选定走哪一条（系统不会自动换路）。每行一条：名称|地址|密钥|族|异步|启用。</p></div></div><label class="route-list-field">路由清单<textarea name="api_routes" rows="5" maxlength="12000" spellcheck="false" autocomplete="off" placeholder="route-a|https://a.example.com/v1|sk-...|grsai_native||true">{{ api_routes_text }}</textarea><small>密钥留空 = 保持该路由已保存的密钥（保存后不回显）。族取 grsai_native 或 openai_compat，留空按模型推断；异步只对 grsai_native 有效；启用留空表示启用。清空整框 = 删除全部路由。</small></label><div class="model-editor-heading"><div><h3>模型行</h3><p>每行对应一个上游模型，模型 ID 保存后不回显。</p></div><button class="secondary" type="button" id="add-model-row">添加模型行</button></div><div id="model-rows" class="model-rows">{% for profile in api_profiles %}<fieldset class="model-row"{% if loop.index0 < api_stored_model_rows %} data-model-index="{{ loop.index0 }}"{% endif %}><legend>API 模型 {{ loop.index }}</legend><button type="button" class="remove-model-row" aria-label="删除模型行">删除</button><div class="model-row-grid"><label>显示名称<input data-field="label" required maxlength="160" value="{{ profile.label }}"></label><label>模型标识（默认上游模型 ID）<input data-field="model-id" required maxlength="120" placeholder="保存时重新填写执行模型 ID" autocomplete="off"><small>公开 ID：{{ profile.id }}</small></label><label>上游模型 ID<input data-field="upstreams" maxlength="300" placeholder="留空 = 只用左边那个；多个用分号分隔，按优先级" autocomplete="off"><small>同一个模型在各家上游的叫法（按优先级）。与模型标识一样保存后不回显，要保留就每次重新填写</small></label><label>最大参考图数<input data-field="max-references" type="number" required min="0" max="14" value="{{ profile.max_references }}"></label><label>使用的 API<select data-field="routes">{% set selected_route = model_routes.get(profile.id, '') %}<option value="">默认地址（上方 Base URL）</option>{% for route in api_routes %}<option value="{{ route.name }}" {% if route.name == selected_route %}selected{% endif %}>{{ route.name }}{% if route.family %} · {{ route.family }}{% endif %}{% if route.async %} · 异步{% endif %}{% if not route.enabled %} · 已停用{% endif %}{% if not route.has_api_key %} · 缺密钥{% endif %}</option>{% endfor %}{% if selected_route and selected_route not in api_route_names %}<option value="{{ selected_route }}" selected>{{ selected_route }} · 清单里已无此路由，请重选</option>{% endif %}</select><small>由你指定这个模型走哪条 API；留空走上面的默认地址。系统不会自动换路。</small></label></div><div class="capability-options"><fieldset><legend>比例（多选）</legend>{% for value in ['1:1','4:3','3:4','16:9','9:16'] %}<label><input data-field="ratio" type="checkbox" value="{{ value }}" {% if value in profile.ratios %}checked{% endif %}>{{ value }}</label>{% endfor %}</fieldset><fieldset><legend>分辨率（多选）</legend>{% for value in ['1K','2K','4K'] %}<label><input data-field="resolution" type="checkbox" value="{{ value }}" {% if value in profile.resolutions %}checked{% endif %}>{{ value }}</label>{% endfor %}</fieldset><fieldset><legend>质量（多选，可留空）</legend>{% for value in api_quality_options %}<label><input data-field="quality" type="checkbox" value="{{ value }}" {% if value in profile.qualities %}checked{% endif %}>{{ value }}</label>{% endfor %}</fieldset><label class="switch-label"><input data-field="enabled" type="checkbox" {% if profile.enabled %}checked{% endif %}>启用</label></div><label>附加请求头（可选）<input data-field="headers" type="text" maxlength="1000" autocomplete="off" value="{{ model_headers.get(profile.id, '') }}" placeholder="X-Api-Key:值;X-Client:值"><small>只作用于本模型。留空则不附加；写成 <code>键:</code> 可删除该请求头。</small></label><label>模型介绍（可选）<input data-field="note" type="text" maxlength="160" autocomplete="off" value="{{ model_notes.get(profile.id, '') }}" placeholder="例如：适合电商白底图，支持 4K"><small>显示在选择模型的小字里（「可用 · 介绍」），只对本站用户可见，不影响生成。</small></label></fieldset>{% endfor %}</div><div class="form-actions"><button class="primary" type="submit">保存 API 配置</button></div></form></section>
+{% if route_states %}
+<section class="panel provider-config-panel">
+  <div class="panel-heading"><div><h2>API 路由状态</h2><p>标为「额度耗尽」的路由不参与选路。上游报的原文留在这里，供核对识别词表。</p></div></div>
+  <div class="table-wrap">
+  <table class="pool-table">
+    <thead><tr><th>模型</th><th>路由</th><th>状态</th><th>最近错误</th><th>操作</th></tr></thead>
+    <tbody>
+      {% for profile in api_profiles %}{% for state in route_states.get(profile.id, []) %}
+      <tr>
+        <td>{{ profile.label }}</td>
+        <td>{{ state.route }}</td>
+        <td>{% if state.exhausted %}<span class="status-badge inactive">额度耗尽</span>{% else %}<span class="status-badge active">可用</span>{% endif %}</td>
+        <td class="pool-reason">{{ (state.exhausted_reason or state.last_error_message)[:160] or '—' }}</td>
+        <td class="pool-actions">{% if state.exhausted %}<form action="/admin/providers/api/routes/clear_exhausted" method="post"><input type="hidden" name="csrf" value="{{ csrf_token }}"><input type="hidden" name="model" value="{{ profile.id }}"><input type="hidden" name="route" value="{{ state.route }}"><button class="secondary mini" type="submit">清除额度耗尽</button></form>{% endif %}</td>
+      </tr>
+      {% endfor %}{% endfor %}
+    </tbody>
+  </table>
+  </div>
+</section>
+{% endif %}
+<template id="model-row-template"><fieldset class="model-row"><legend>新模型</legend><button type="button" class="remove-model-row" aria-label="删除模型行">删除</button><div class="model-row-grid"><label>显示名称<input data-field="label" required maxlength="160"></label><label>服务端模型 ID<input data-field="model-id" required maxlength="120" autocomplete="off"></label><label>最大参考图数<input data-field="max-references" type="number" required min="0" max="14" value="4"></label><label>使用的 API<select data-field="routes"><option value="">默认地址（上方 Base URL）</option>{% for route in api_routes %}<option value="{{ route.name }}">{{ route.name }}{% if route.family %} · {{ route.family }}{% endif %}{% if route.async %} · 异步{% endif %}{% if not route.enabled %} · 已停用{% endif %}{% if not route.has_api_key %} · 缺密钥{% endif %}</option>{% endfor %}</select><small>由你指定这个模型走哪条 API；留空走上面的默认地址。系统不会自动换路。</small></label></div><div class="capability-options"><fieldset><legend>比例（多选）</legend>{% for value in ['1:1','4:3','3:4','16:9','9:16'] %}<label><input data-field="ratio" type="checkbox" value="{{ value }}" {% if value == '1:1' %}checked{% endif %}>{{ value }}</label>{% endfor %}</fieldset><fieldset><legend>分辨率（多选）</legend>{% for value in ['1K','2K','4K'] %}<label><input data-field="resolution" type="checkbox" value="{{ value }}" {% if value == '2K' %}checked{% endif %}>{{ value }}</label>{% endfor %}</fieldset><fieldset><legend>质量（多选，可留空）</legend>{% for value in api_quality_options %}<label><input data-field="quality" type="checkbox" value="{{ value }}" {% if value == api_quality_options[0] %}checked{% endif %}>{{ value }}</label>{% endfor %}</fieldset><label class="switch-label"><input data-field="enabled" type="checkbox" checked>启用</label></div><label>附加请求头（可选）<input data-field="headers" type="text" maxlength="1000" autocomplete="off" placeholder="X-Api-Key:值;X-Client:值"><small>只作用于本模型。留空则不附加；写成 <code>键:</code> 可删除该请求头。</small></label><label>模型介绍（可选）<input data-field="note" type="text" maxlength="160" autocomplete="off" placeholder="例如：适合电商白底图，支持 4K"><small>显示在选择模型的小字里（「可用 · 介绍」），只对本站用户可见，不影响生成。</small></label></fieldset></template>
 {% endblock %}

@@ -3,9 +3,43 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <meta name="color-scheme" content="light">
-  <title>{% block title %}XGM AI Image Hub{% endblock %}</title>
-  <link rel="stylesheet" href="/static/app.css?v=link-select-delete-v1">
+  <meta name="color-scheme" content="light dark">
+  <script>
+  (function () {
+    try {
+      var mq = window.matchMedia('(prefers-color-scheme: dark)');
+      var stored = localStorage.getItem('image-hub-theme');
+      var theme;
+      if (stored === 'light' || stored === 'dark') theme = stored;
+      else theme = mq.matches ? 'dark' : 'light';
+      document.documentElement.dataset.theme = theme;
+      document.documentElement.style.colorScheme = theme;
+      mq.addEventListener('change', function () {
+        try { if ((localStorage.getItem('image-hub-theme') || 'system') === 'system') { var t = mq.matches ? 'dark' : 'light'; document.documentElement.dataset.theme = t; document.documentElement.style.colorScheme = t; } } catch (e) {}
+      });
+    } catch (e) {
+      document.documentElement.dataset.theme = 'light';
+      document.documentElement.style.colorScheme = 'light';
+    }
+    window.setImageHubTheme = function (value) {
+      try { localStorage.setItem('image-hub-theme', value); } catch (e) {}
+      var t = value === 'system' ? (window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light') : value;
+      document.documentElement.dataset.theme = t;
+      document.documentElement.style.colorScheme = t;
+      var label = document.querySelector('[data-theme-label]');
+      if (label) label.textContent = value === 'system' ? '跟随系统' : (value === 'dark' ? '深色' : '浅色');
+    };
+    window.cycleImageHubTheme = function () {
+      var cur; try { cur = localStorage.getItem('image-hub-theme') || 'light'; } catch (e) { cur = 'light'; }
+      var next = cur === 'light' ? 'dark' : (cur === 'dark' ? 'system' : 'light');
+      window.setImageHubTheme(next);
+    };
+  })();
+  </script>
+  <title>{% block title %}AI Image Hub{% endblock %}</title>
+  <!-- ⚠️ 改了 app.css 就要**顺手改这个查询串**：否则浏览器继续用缓存里的旧 CSS，
+       表现是"改了但没生效"，很难查。 -->
+  <link rel="stylesheet" href="/static/app.css?v=notice-toast-v1">
 </head>
 <body>
   {% block body %}{% endblock %}

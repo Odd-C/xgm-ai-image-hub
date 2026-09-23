@@ -1,11 +1,14 @@
 services:
-  xgm-ai-image-hub:
+  image-hub:
     build: .
     restart: unless-stopped
     env_file: .env
     ports:
       - "127.0.0.1:5190:5190"
     volumes:
+      # 容器以非 root（uid 10001）运行，而挂载会覆盖镜像内的属主 —— 宿主机这两个
+      # 目录必须让 uid 10001 可写，否则启动建库时直接失败：
+      #   mkdir -p data storage && sudo chown -R 10001:10001 data storage
       - ./data:/app/data
       - ./storage:/app/storage
       # LibTV / Lovart 执行器直接调用官方 skill 脚本，不需要安装任何外部 CLI。

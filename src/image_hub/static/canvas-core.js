@@ -8,10 +8,18 @@
   const SCHEMA_VERSION = 6;
   const IMAGE = 'image';
   const GENERATION = 'generation_node';
+  const TEXT_NODE = 'text_node';
   const LEGACY_REQUEST = 'generation_request';
   const LEGACY_RESULT = 'generation_result';
   const RESULT_REF_PREFIX = 'result:';
   const DEFAULT_WIDTH = 344;
+  /* 「Agent 生图器」的默认宽度：它比普通生图器多一组轴选择器（平台/市场/类目/工作类型/
+     卖点 + 卖点补充），344 会把两列网格挤成一条。加宽到 420 让轴两列并排、有呼吸感。 */
+  const AGENT_DEFAULT_WIDTH = 420;
+  /* 卡片宽度可调（拖右下角手柄，只改宽度）。下限保证卡片里的选择器与提示词框
+     不会被挤成一条，上限避免一张卡横跨整个视野。文本卡与生图卡共用这对边界。 */
+  const MIN_WIDTH = 240;
+  const MAX_WIDTH = 720;
   const MAX_COUNT = 4;
   /* Cards are siblings, never a grid: one card owns exactly one result. */
   const SPLIT_GAP = 120;
@@ -39,6 +47,13 @@
 
   function clampCount(value, fallback = 1) {
     return Math.max(1, Math.min(MAX_COUNT, Number(value) || Number(fallback) || 1));
+  }
+
+  /* 宽度是用户拖出来的，所以它必须**先被收进合法区间再存**：
+     否则拖出屏幕外（或旧数据里的畸形值）会一直留在画布状态里。 */
+  function clampWidth(value, fallback = DEFAULT_WIDTH) {
+    const width = Number(value) || Number(fallback) || DEFAULT_WIDTH;
+    return Math.round(Math.max(MIN_WIDTH, Math.min(MAX_WIDTH, width)));
   }
 
   /* ---- reference identity -------------------------------------------------
@@ -72,6 +87,54 @@
     return Boolean(node && node.type === IMAGE);
   }
 
+  /* 文本节点：画布上的一等文本卡片。可编辑、可复制、可作为文本输出给别的节点
+     （生图卡接上它，提示词就由它提供）；内置「反推提示词」—— 接了图片输入时，
+     把那张图反推成一句英文提示词填进自己。
+     ⚠️ 它**没有**生成能力，所以不参与 generation 的批次/结果逻辑。 */
+  function isTextNode(node) {
+    return Boolean(node && node.type === TEXT_NODE);
+  }
+
+  function normalizeTextNode(node) {
+    return {
+      ...node,
+      type: TEXT_NODE,
+      x: Number(node?.x) || 0,
+      y: Number(node?.y) || 0,
+      width: clampWidth(node?.width),
+      text: typeof node?.text === 'string' ? node.text : '',
+      // 图片输入（来自图片节点或某个生成结果）—— 反推提示词的原料。
+      orderedInputIds: uniqueRefs(node?.orderedInputIds),
+    };
+  }
+
+  /* 提示词来源：生图卡接上文本卡后，`promptSourceId` 指向那张卡，
+     提示词就是它的镜像。指向已经不存在的节点（或指向的不是文本卡）时按没有处理。 */
+  function promptSourceNode(nodes, node) {
+    if (!isGenerationNode(node) || !node.promptSourceId) return null;
+    const source = (nodes || []).find(item => item.id === node.promptSourceId);
+    return isTextNode(source) ? source : null;
+  }
+
+  /* ---- 连线的唯一判据 -------------------------------------------------------
+     画布上只有两种落点：生图卡的输入端口（接参考图，也能接一张文本卡当提示词来源）
+     和文本卡的输入端口（接参考图，那是「反推提示词」的原料）。
+     渲染连线、高亮落点、真正落线三处都问这里，避免各写一份规则后互相不一致。 */
+
+  function canLink(nodes, target, sourceId) {
+    if (!target || !sourceId) return false;
+    if (parseResultRefId(sourceId)) return isGenerationNode(target) || isTextNode(target);
+    const source = (nodes || []).find(node => node.id === sourceId);
+    if (isTextNode(source)) return isGenerationNode(target);
+    return isImageNode(source) && (isGenerationNode(target) || isTextNode(target));
+  }
+
+  function hasLiveLink(target, sourceId) {
+    if (!target || !sourceId) return false;
+    if ((target.orderedInputIds || []).includes(sourceId)) return true;
+    return isGenerationNode(target) && target.promptSourceId === sourceId;
+  }
+
   function normalizeResult(result) {
     const parameters = result?.parameters && typeof result.parameters === 'object' ? {...result.parameters} : {};
     return {
@@ -86,6 +149,12 @@
       provider: result?.provider || '',
       modelLabel: result?.modelLabel || '',
       prompt: result?.prompt || '',
+      optimized_prompt: result?.optimized_prompt || '',
+      effective_prompt: result?.effective_prompt || '',
+      prompt_optimize_state: result?.prompt_optimize_state || 'none',
+      prompt_optimize_error: result?.prompt_optimize_error || '',
+      prompt_optimize_mode: result?.prompt_optimize_mode || '',
+      prompt_optimize_note: result?.prompt_optimize_note || '',
       profileId: result?.profileId || '',
       parameters,
       createdAt: result?.createdAt || '',
@@ -102,6 +171,7 @@
       quality: request?.quality || 'standard',
       count: clampCount(request?.count),
       orderedInputIds: uniqueRefs(request?.orderedInputIds),
+      agentSpec: request?.agentSpec && typeof request.agentSpec === 'object' ? {...request.agentSpec} : null,
     };
   }
 
@@ -129,19 +199,31 @@
       type: GENERATION,
       x: Number(node?.x) || 0,
       y: Number(node?.y) || 0,
-      width: Number(node?.width) || DEFAULT_WIDTH,
+      width: clampWidth(node?.width, node?.agentSpec ? AGENT_DEFAULT_WIDTH : DEFAULT_WIDTH),
       expanded: node?.expanded !== false,
       /* A user-initiated expand is pinned: background result refreshes may
          re-render the card but must never collapse it again. Only the header
          toggle (or submitting a new generation) clears the pin. */
       expandedPinned: node?.expandedPinned === true,
       prompt: node?.prompt || '',
+      /* 提示词来源：一个文本节点的 id。设了它，`prompt` 就是那张文本卡的镜像
+         （改文本卡即时写回这里，卡片自己的提示词框随之只读），断开连线时用
+         `promptBackup` 把用户连线前手写的内容还回去。 */
+      promptSourceId: node?.promptSourceId || '',
+      promptBackup: typeof node?.promptBackup === 'string' ? node.promptBackup : '',
       provider: node?.provider || '',
       profileId: node?.profileId || '',
       ratio: node?.ratio || '1:1',
       resolution: node?.resolution || '2K',
       quality: node?.quality || 'standard',
       count: clampCount(node?.count),
+      /* 「Agent 生图器」：同一张生成卡，但带上结构化轴（平台/市场/类目/工作类型/卖点）。
+         存在即代表这是 agent 节点 —— 走 API 渠道、由服务端按平台规范推导比例，
+         提交时会带 agent_spec。空对象/未设置 = 普通生图节点。 */
+      agentSpec: node?.agentSpec && typeof node.agentSpec === 'object' ? {...node.agentSpec} : null,
+      /* 逐张参考图的职责：`{<输入引用>: <职责 key>}`。**允许留空**（键缺失 = 未标注），
+         提交时按输入顺序排成 reference_roles，空位留空串由服务端/模型补。 */
+      agentRoles: node?.agentRoles && typeof node.agentRoles === 'object' ? {...node.agentRoles} : {},
       orderedInputIds: uniqueRefs(node?.orderedInputIds || node?.referenceOrder),
       parentGenerationId: node?.parentGenerationId || '',
       primaryResultId: node?.primaryResultId || '',
@@ -189,6 +271,7 @@
       quality: node?.quality || '',
       count: node?.count,
       orderedInputIds: node?.orderedInputIds,
+      agentSpec: node?.agentSpec,
     });
   }
 
@@ -363,6 +446,10 @@
       node.primaryResultId = first.id;
       node.dirty = isDirty(node);
       const positions = splitGrid(node, rest.length, options);
+      /* 提示词来源跟着一起拆：文本卡连着原卡时，每张新卡都该继续由它供词，
+         而不是各自留一份抄下来的字。来源已经不在（或不是文本卡）就按没有处理，
+         免得留下一串指向空气的 promptSourceId。 */
+      const textSource = promptSourceNode(list, node);
       rest.forEach((result, index) => {
         const id = options.uid ? options.uid('generation') : `${node.id}-result-${index + 2}`;
         remap.set(`${node.id}:${result.id}`, id);
@@ -379,6 +466,10 @@
           error: '',
           parentGenerationId: node.parentGenerationId,
           ...recipe,
+          promptSourceId: textSource ? textSource.id : '',
+          /* 断开连线时回到拆分时那份文本，而不是一个空框 —— 这张卡没有更早的
+             手写历史，原卡的 promptBackup 是**那张卡**的往事，不该搬过来。 */
+          promptBackup: textSource ? recipe.prompt : '',
           activeBatch: {
             id: `${batch.id || id}-split-${index + 2}`,
             createdAt: batch.createdAt,
@@ -568,6 +659,12 @@
       provider: item.provider,
       modelLabel: item.model_label,
       prompt: item.prompt,
+      optimized_prompt: item.optimized_prompt || '',
+      effective_prompt: item.effective_prompt || '',
+      prompt_optimize_state: item.prompt_optimize_state || 'none',
+      prompt_optimize_error: item.prompt_optimize_error || '',
+      prompt_optimize_mode: item.prompt_optimize_mode || '',
+      prompt_optimize_note: item.prompt_optimize_note || '',
       profileId: item.profile_id || '',
       parameters,
       createdAt: item.created_at || '',
@@ -637,6 +734,7 @@
         return restored;
       }
       if (node.type === GENERATION) return normalizeGenerationNode(node);
+      if (node.type === TEXT_NODE) return normalizeTextNode(node);
       const restored = {...node};
       if (restored.type === LEGACY_REQUEST) restored.orderedInputIds = [...(restored.orderedInputIds || restored.referenceOrder || [])];
       return restored;
@@ -644,7 +742,7 @@
   }
 
   function isPresentationNode(node) {
-    return Boolean(node && [IMAGE, GENERATION, LEGACY_REQUEST, LEGACY_RESULT].includes(node.type));
+    return Boolean(node && [IMAGE, GENERATION, TEXT_NODE, LEGACY_REQUEST, LEGACY_RESULT].includes(node.type));
   }
 
   function refOwnerNodeId(ref) {
@@ -656,21 +754,40 @@
     const selected = new Set(selectedIds);
     const sourceById = new Map(nodes.map(node => [node.id, node]));
     const copied = nodes.filter(node => selected.has(node.id) && isPresentationNode(node));
-    const idMap = new Map(copied.map(node => [node.id, uid(node.type === IMAGE ? 'image' : 'generation')]));
+    const prefix = type => type === IMAGE ? 'image' : type === TEXT_NODE ? 'text' : 'generation';
+    const idMap = new Map(copied.map(node => [node.id, uid(prefix(node.type))]));
+    /* 一个引用（图片 id 或结果引用）指向的节点也被一起复制时，克隆要连到克隆，
+       否则两份副本会共享同一张图；没被复制的就保持原引用。 */
+    const remapRefs = refs => uniqueRefs(refs).flatMap(ref => {
+      const ownerId = refOwnerNodeId(ref);
+      const owner = sourceById.get(ownerId);
+      if (parseResultRefId(ref) && selected.has(ownerId)) return [];
+      if (!parseResultRefId(ref) && owner && !selected.has(ownerId)) return [ref];
+      return [idMap.get(ownerId) || ref];
+    });
     const clones = copied.map(node => {
       const clone = {...node, id: idMap.get(node.id), x: Number(node.x || 0) + offset.x, y: Number(node.y || 0) + offset.y};
       if (clone.type === IMAGE) {
         clone.needsReselect = Boolean(node.needsReselect);
         return clone;
       }
+      if (clone.type === TEXT_NODE) {
+        clone.orderedInputIds = remapRefs(node.orderedInputIds);
+        return normalizeTextNode(clone);
+      }
       /* A duplicate carries the recipe, never fabricated generation evidence. */
-      clone.orderedInputIds = uniqueRefs(node.orderedInputIds).flatMap(ref => {
-        const ownerId = refOwnerNodeId(ref);
-        const owner = sourceById.get(ownerId);
-        if (parseResultRefId(ref) && selected.has(ownerId)) return [];
-        if (!parseResultRefId(ref) && owner && !selected.has(ownerId)) return [ref];
-        return [idMap.get(ownerId) || ref];
-      });
+      clone.orderedInputIds = remapRefs(node.orderedInputIds);
+      /* 提示词来源也在选区里就连到它的克隆；否则把文本落成手写提示词，
+         副本不该悄悄绑回原卡、让两张卡的字一起变。 */
+      if (node.promptSourceId) {
+        if (selected.has(node.promptSourceId)) clone.promptSourceId = idMap.get(node.promptSourceId) || '';
+        else {
+          clone.promptSourceId = '';
+          clone.promptBackup = '';
+          const owner = sourceById.get(node.promptSourceId);
+          if (isTextNode(owner)) clone.prompt = owner.text || '';
+        }
+      }
       clone.expanded = true;
       clone.expandedPinned = false;
       clone.submitting = false;
@@ -699,8 +816,13 @@
     const removed = new Set(selectedIds);
     return nodes.filter(node => !removed.has(node.id)).map(node => {
       if (node.type === IMAGE) return node;
-      if (node.type !== GENERATION && node.type !== LEGACY_REQUEST) return node;
-      return {...node, orderedInputIds: (node.orderedInputIds || []).filter(ref => !removed.has(refOwnerNodeId(ref)))};
+      // 文本节点也有输入（图片），删掉源图时同样要清理它的引用。
+      if (node.type !== GENERATION && node.type !== LEGACY_REQUEST && node.type !== TEXT_NODE) return node;
+      const next = {...node, orderedInputIds: (node.orderedInputIds || []).filter(ref => !removed.has(refOwnerNodeId(ref)))};
+      /* 提供提示词的文本卡被删掉时连线必须一起消失，否则卡片会留着一个指向空气的来源。
+         字已经镜像在 `prompt` 上，所以用户不会丢内容。 */
+      if (next.promptSourceId && removed.has(next.promptSourceId)) next.promptSourceId = '';
+      return next;
     });
   }
 
@@ -744,11 +866,11 @@
   }
 
   return {
-    SCHEMA_VERSION, IMAGE, GENERATION, LEGACY_REQUEST, LEGACY_RESULT, DEFAULT_WIDTH, MAX_COUNT,
+    SCHEMA_VERSION, IMAGE, GENERATION, TEXT_NODE, LEGACY_REQUEST, LEGACY_RESULT, DEFAULT_WIDTH, AGENT_DEFAULT_WIDTH, MIN_WIDTH, MAX_WIDTH, MAX_COUNT,
     SPLIT_GAP, SPLIT_ROW_HEIGHT, SPLIT_MAX_COLUMNS,
-    profileById, chooseRequestProfile, requestAvailability, ratioToAspect, clampCount,
+    profileById, chooseRequestProfile, requestAvailability, ratioToAspect, clampCount, clampWidth,
     resultRefId, parseResultRefId, uniqueRefs,
-    isGenerationNode, isImageNode, normalizeGenerationNode, normalizeBatch, normalizeResult, normalizeRequest,
+    isGenerationNode, isImageNode, isTextNode, normalizeTextNode, promptSourceNode, canLink, hasLiveLink, normalizeGenerationNode, normalizeBatch, normalizeResult, normalizeRequest,
     batchResults, nodeResults, findResult, requestSnapshot, activeRequest, isDirty,
     primaryResult, primaryGenerationId, nodeStatus, batchProgress, attemptError,
     resolveInputRef, resolveInputRefs, firstMissingLocalInput,

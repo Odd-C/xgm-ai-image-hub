@@ -1,6 +1,9 @@
 import hashlib
 import io
+import os
 import re
+import shutil
+import uuid
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -30,8 +33,8 @@ class StoredImage:
     byte_size: int
 
 
-async def store_reference(generation_id: str, reference_id: str, upload: UploadFile) -> StoredImage:
-    payload = await upload.read(settings.max_upload_bytes + 1)
+def validate_image_payload(payload: bytes) -> tuple[str, int, int]:
+    """校验字节确实是一张受支持的图片，返回 ``(格式, 宽, 高)``。"""
     if not payload or len(payload) > settings.max_upload_bytes:
         raise InvalidImage("图片为空或超过 30 MB")
     try:
@@ -45,15 +48,63 @@ async def store_reference(generation_id: str, reference_id: str, upload: UploadF
         raise InvalidImage("仅支持宽高不小于 64px 的 PNG、JPEG、WebP")
     if width * height > MAX_IMAGE_PIXELS:
         raise InvalidImage("图片像素总量过大")
+    return image_format, width, height
+
+
+def _mime_for(image_format: str) -> str:
+    return {"PNG": "image/png", "JPEG": "image/jpeg", "WEBP": "image/webp"}[image_format]
+
+
+def store_asset_payload(payload: bytes) -> StoredImage:
+    """把图片字节落成素材文件，按内容寻址（同一份内容只落一份盘）。"""
+    image_format, width, height = validate_image_payload(payload)
+    digest = hashlib.sha256(payload).hexdigest()
+    extension = ALLOWED_FORMATS[image_format]
+    storage_key = f"assets/{digest}{extension}"
+    target = settings.storage_root / storage_key
+    if not target.exists():
+        target.parent.mkdir(parents=True, exist_ok=True)
+        # 先写唯一临时名再原子改名：并发写同一份内容时不会互相截断
+        temp = target.with_name(f"{target.name}.{uuid.uuid4().hex}.part")
+        try:
+            temp.write_bytes(payload)
+            temp.replace(target)
+        finally:
+            temp.unlink(missing_ok=True)
+    return StoredImage(
+        storage_key=storage_key,
+        sha256=digest,
+        mime_type=_mime_for(image_format),
+        width=width,
+        height=height,
+        byte_size=len(payload),
+    )
+
+
+def link_or_copy(source: Path, target: Path) -> None:
+    """把已存在的文件挂到新路径：优先硬链接，失败退回复制。"""
+    target.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        os.link(source, target)
+    except OSError:
+        shutil.copyfile(source, target)
+
+
+async def store_reference(generation_id: str, reference_id: str, upload: UploadFile) -> StoredImage:
+    payload = await upload.read(settings.max_upload_bytes + 1)
+    image_format, width, height = validate_image_payload(payload)
     extension = ALLOWED_FORMATS[image_format]
     storage_key = f"generations/{generation_id}/references/{reference_id}{extension}"
     target = settings.storage_root / storage_key
     target.parent.mkdir(parents=True, exist_ok=True)
-    target.write_bytes(payload)
+    # 先写唯一临时名再 replace：直接写正式路径的话
+    staging = target.with_name(f"{target.name}.{uuid.uuid4().hex}.part")
+    staging.write_bytes(payload)
+    os.replace(staging, target)
     return StoredImage(
         storage_key=storage_key,
         sha256=hashlib.sha256(payload).hexdigest(),
-        mime_type={"PNG": "image/png", "JPEG": "image/jpeg", "WEBP": "image/webp"}[image_format],
+        mime_type=_mime_for(image_format),
         width=width,
         height=height,
         byte_size=len(payload),
@@ -84,30 +135,17 @@ def resolve_storage_key(storage_key: str) -> Path:
 
 
 def png_download_name(source_name: str, generation_id: str = "") -> str:
-    """A safe ASCII file name that always ends in ``.png``.
-
-    The stored artifact keeps whatever name the provider/storage layer used, so
-    the download name is rebuilt from the stem with every character that is not
-    plain ASCII slug material replaced. Nothing user-supplied can reach the
-    header unsanitized. Storage writes generic names such as ``result.png``, so
-    those borrow the generation id to stay distinguishable per image.
-    """
+    """A safe ASCII file name that always ends in ``.png``."""
     stem = Path(str(source_name or "")).stem
     safe = DOWNLOAD_STEM_PATTERN.sub("-", stem).strip("-._")[:60]
     prefix = re.sub(r"[^0-9A-Za-z]+", "", str(generation_id or ""))[:8]
     if not safe or (safe.lower() in GENERIC_ARTIFACT_STEMS and prefix):
-        safe = f"xgm-ai-image-hub-{prefix}" if prefix else (safe or "xgm-ai-image-hub")
+        safe = f"image-{prefix}" if prefix else (safe or "image")
     return f"{safe}{PNG_EXTENSION}"
 
 
 def transcode_artifact_to_png(path: Path) -> bytes:
-    """Decode a stored artifact and re-encode it as lossless PNG bytes.
-
-    Only the download path calls this: inline previews keep serving the stored
-    original. The stored file is never rewritten. Frames/decoding problems and
-    size limits raise :class:`InvalidImage` so the caller can answer with a
-    readable 4xx instead of a 500.
-    """
+    """Decode a stored artifact and re-encode it as lossless PNG bytes."""
     if not path.is_file():
         raise InvalidImage("图片不存在，无法下载")
     if path.stat().st_size > settings.max_artifact_bytes:
@@ -125,8 +163,7 @@ def transcode_artifact_to_png(path: Path) -> bytes:
             has_alpha = "A" in image.getbands() or (
                 image.mode == "P" and "transparency" in image.info
             )
-            # Alpha is preserved as RGBA; opaque images stay RGB. Both paths are
-            # a direct channel conversion with no lossy intermediate step.
+            # Alpha is preserved as RGBA; opaque images stay RGB.
             target_mode = "RGBA" if has_alpha else "RGB"
             converted = image if image.mode == target_mode else image.convert(target_mode)
             buffer = io.BytesIO()

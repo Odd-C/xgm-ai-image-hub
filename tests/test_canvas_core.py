@@ -6,16 +6,85 @@ CORE_PATH = Path(__file__).parents[1] / "src/image_hub/static/canvas-core.js"
 
 
 def run_canvas_core(script: str) -> dict:
+    # ``encoding`` 必须显式给：Windows 上默认按 GBK 解码，中文断言会变成乱码。
     completed = subprocess.run(
         ["node", "-e", script],
         check=True,
         capture_output=True,
         text=True,
-    )
+        encoding="utf-8")
     return json.loads(completed.stdout)
 
 
+def test_agent_spec_survives_node_normalization_and_request_snapshot():
+    """「Agent 生图器」的轴必须一路带到提交请求里。
+
+    它复用生成节点（同一张卡、同一套结果逻辑），靠 ``agentSpec`` 区分 ——
+    归一化或 requestSnapshot 漏了它，提交就没有 agent_spec，服务端按普通生图跑。
+    """
+    result = run_canvas_core(
+        f"""
+        const core = require({json.dumps(str(CORE_PATH))});
+        const agent = core.normalizeGenerationNode({{
+          id:'g1', type:'generation_node', x:1, y:2,
+          agentSpec: {{platform:'amazon', market:'us', work_type:'replace', selling_point_text:'防滑'}}
+        }});
+        const plain = core.normalizeGenerationNode({{id:'g2', type:'generation_node'}});
+        const snapshot = core.requestSnapshot(agent);
+        console.log(JSON.stringify({{
+          agent: agent.agentSpec,
+          plain: plain.agentSpec,
+          snapshot: snapshot.agentSpec,
+          plainSnapshot: core.requestSnapshot(plain).agentSpec
+        }}));
+        """
+    )
+
+    assert result["agent"]["platform"] == "amazon"
+    assert result["agent"]["selling_point_text"] == "防滑"
+    assert result["plain"] is None
+    assert result["snapshot"]["work_type"] == "replace"
+    assert result["plainSnapshot"] is None
+
+
+def test_agent_roles_survive_normalization_and_allow_blank():
+    """逐张职责要能一路带到提交，且**留空是合法默认**（用户口径：留空由服务端补）。"""
+    result = run_canvas_core(
+        f"""
+        const core = require({json.dumps(str(CORE_PATH))});
+        const agent = core.normalizeGenerationNode({{
+          id:'g1', type:'generation_node',
+          agentSpec: {{platform:'amazon'}},
+          agentRoles: {{'img-1':'product'}},
+        }});
+        const plain = core.normalizeGenerationNode({{id:'g2', type:'generation_node'}});
+        console.log(JSON.stringify({{
+          roles: agent.agentRoles,
+          blankRoles: plain.agentRoles,
+          specHasRoles: Object.keys(core.requestSnapshot(agent).agentSpec).includes('agentRoles'),
+        }}));
+        """
+    )
+
+    assert result["roles"] == {"img-1": "product"}
+    assert result["blankRoles"] == {}
+    # agentRoles 刻意不进请求快照：提交时由 generate() 排成 reference_roles 放进 spec。
+    assert result["specHasRoles"] is False
+
+
+def test_agent_card_is_wider_than_the_plain_generator():
+    """Agent 生图器多一组轴选择器，默认宽度必须更宽（用户要求「加宽 agent 生图器」）。"""
+    result = run_canvas_core(
+        f"""
+        const core = require({json.dumps(str(CORE_PATH))});
+        console.log(JSON.stringify({{plain: core.DEFAULT_WIDTH, agent: core.AGENT_DEFAULT_WIDTH}}));
+        """
+    )
+    assert result["agent"] > result["plain"], result
+
+
 def test_new_request_chooses_first_enabled_profile_and_never_falls_back_for_history():
+
     result = run_canvas_core(
         f"""
         const core = require({json.dumps(str(CORE_PATH))});

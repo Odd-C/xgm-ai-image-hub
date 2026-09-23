@@ -1,0 +1,19 @@
+{% extends "admin_base.html" %}
+{% block admin_title %}连接 LibTV{% endblock %}
+{% block admin_content %}
+<header class="page-heading"><div><span class="eyebrow">LIBTV</span><h1>连接 LibTV</h1><p>授权绑定当前管理员账号；凭据只保存在服务端。</p></div></header>
+<section class="panel">
+  <div class="panel-heading"><div><h2>第一步：打开 LibTV 授权页</h2><p>在新标签页登录并确认授权（申请账号读取、项目读写、媒体上传、任务与导出权限）。</p></div></div>
+  <p><a class="primary" href="{{ authorize_url }}" target="_blank" rel="noopener noreferrer">打开 LibTV 授权页</a></p>
+  <label>或复制链接手动打开<textarea rows="3" readonly>{{ authorize_url }}</textarea></label>
+</section>
+<section class="panel">
+  <div class="panel-heading"><div><h2>第二步：完成授权</h2><p>授权后浏览器会跳转到 <code>{{ redirect_uri }}</code>。</p></div></div>
+  <p>如果那个页面能正常打开，说明授权已经完成，回管理页刷新即可。若页面打不开（远程访问部署机时常见），把地址栏里的**完整 URL** 复制到下面提交。</p>
+  <form class="stack-form" action="/admin/providers/libtv/paste" method="post">
+    <input type="hidden" name="csrf" value="{{ csrf_token }}">
+    <label>粘贴授权回调地址<input name="callback_url" type="text" maxlength="2000" required placeholder="http://localhost:8000/admin/providers/libtv/callback?code=...&amp;state=..." autocomplete="off"></label>
+    <div class="form-actions"><button class="primary" type="submit">完成授权</button><a class="secondary" href="/admin/providers">返回平台与模型</a></div>
+  </form>
+</section>
+{% endblock %}

@@ -1,9 +1,11 @@
+import io
 import json
 import re
 from concurrent.futures import ThreadPoolExecutor
 from threading import Event, Lock
 
 from fastapi.testclient import TestClient
+from PIL import Image
 
 from image_hub import providers as provider_module
 from image_hub import web as web_module
@@ -20,11 +22,9 @@ def login(client: TestClient, username: str = "admin") -> str:
     response = client.post(
         "/login",
         data={"username": username, "password": "test-password", "csrf": token},
-        follow_redirects=False,
-    )
+        follow_redirects=False)
     assert response.status_code == 303
     # Logging in rotates the CSRF token, so the pre-login value is dead. Read
-    # the live token off an authenticated page instead.
     return csrf_from(client.get("/projects").text)
 
 
@@ -42,14 +42,17 @@ def create_project(client: TestClient, token: str, name: str) -> str:
 
 
 def create_member(username: str, display_name: str = "") -> User:
-    """建一个普通成员账号，密码沿用 bootstrap 管理员那份。"""
+    """建一个挂在 bootstrap 管理员名下的子账号。
+
+    子账号的积分池来自归属管理员，直接用 SessionLocal 造裸 User 会没有
+    owner_admin_id，提交任务时就会被判成没余额。这个 helper 统一补上归属。
+    """
     with SessionLocal() as session:
         admin = session.query(User).filter_by(username="admin").one()
         member = User(
             username=username,
             display_name=display_name,
-            password_hash=admin.password_hash,
-        )
+            password_hash=admin.password_hash)
         session.add(member)
         session.commit()
         session.refresh(member)
@@ -59,7 +62,17 @@ def create_member(username: str, display_name: str = "") -> User:
 def install_submission_race_gate(
     monkeypatch, profile: ModelProfile
 ) -> tuple[Event, Event, Event]:
-    first_profile_entered = Event()
+    """把「第一个请求卡在**临界区入口**」这件事装出来。
+
+    ⭐ 挂点必须在临界区（``_locked_generation_user``）上，不能挂在它之前的任何一步。
+    2026-09-22 把参考图落盘与 ``get_profile`` 移出写锁之后，原来挂在 ``get_profile``
+    上的闸门就变成了「锁外阻塞」—— 第二个请求会直奔临界区，于是这两条用例测到的
+    不再是「写锁把两次提交串行化」。挂回临界区入口，才继续钉住那两条不变量：
+
+    - 同一 idempotency_key 的两次并发提交最终**只落一条** generation；
+    - 跨项目的并发提交仍受 ``max_active_tasks_per_user`` 约束（一个 202、一个 429）。
+    """
+    first_entered = Event()
     release_first = Event()
     second_lock_attempted = Event()
     attempt_lock = Lock()
@@ -70,19 +83,19 @@ def install_submission_race_gate(
         nonlocal attempt_count
         with attempt_lock:
             attempt_count += 1
-            if attempt_count == 2:
-                second_lock_attempted.set()
+            mine = attempt_count
+        if mine == 1:
+            # 第一个请求停在临界区**入口**（尚未 BEGIN IMMEDIATE），等测试放行。
+            first_entered.set()
+            assert release_first.wait(5)
+        elif mine == 2:
+            second_lock_attempted.set()
         return original_lock(request, session)
 
-    def delayed_profile(_):
-        if not first_profile_entered.is_set():
-            first_profile_entered.set()
-            assert release_first.wait(5)
-        return profile
-
     monkeypatch.setattr(web_module, "_locked_generation_user", observed_lock)
-    monkeypatch.setattr(web_module, "get_profile", delayed_profile)
-    return first_profile_entered, release_first, second_lock_attempted
+    # 仍然要替掉 get_profile：用例用的是合成的 ``api:test-image``，真解析取不到它。
+    monkeypatch.setattr(web_module, "get_profile", lambda *_args, **_kwargs: profile)
+    return first_entered, release_first, second_lock_attempted
 
 
 def test_health_login_and_project_workspace():
@@ -102,9 +115,8 @@ def test_health_login_and_project_workspace():
 def test_prompt_history_and_three_state_marking(monkeypatch):
     profile = ModelProfile(
         id="api:test-image", label="Test Image", provider="api",
-        upstream_model="test-image", enabled=True,
-    )
-    monkeypatch.setattr("image_hub.web.get_profile", lambda _: profile)
+        upstream_model="test-image", enabled=True)
+    monkeypatch.setattr("image_hub.web.get_profile", lambda *_args, **_kwargs: profile)
     with TestClient(app) as client:
         token = login(client)
         project_id = create_project(client, token, "提示词历史项目")
@@ -113,8 +125,7 @@ def test_prompt_history_and_three_state_marking(monkeypatch):
             data={"prompt": "原始提示词，不要改写", "profile_id": profile.id,
                   "ratio": "1:1", "resolution": "2K", "quality": "standard",
                   "idempotency_key": "1234567890abcdef"},
-            headers={"X-CSRF-Token": token},
-        )
+            headers={"X-CSRF-Token": token})
         assert response.status_code == 202
         generation_id = response.json()["id"]
         with SessionLocal() as session:
@@ -129,8 +140,7 @@ def test_prompt_history_and_three_state_marking(monkeypatch):
             marked = client.post(
                 f"/api/projects/{project_id}/generations/{generation_id}/sentiment",
                 json={"sentiment": sentiment},
-                headers={"X-CSRF-Token": token},
-            )
+                headers={"X-CSRF-Token": token})
             assert marked.status_code == 200
             assert marked.json()["sentiment"] == sentiment
 
@@ -152,8 +162,7 @@ def test_projects_and_users_are_isolated():
             generation = Generation(
                 user_id=foreign.id, project_id=foreign_project.id,
                 idempotency_key="foreign-idempotent", original_prompt="不可见提示词",
-                provider="api", model_id="x", model_label="x", status="succeeded",
-            )
+                provider="api", model_id="x", model_label="x", status="succeeded")
             session.add(generation)
             session.commit()
             foreign_project_id = foreign_project.id
@@ -172,8 +181,7 @@ def test_canvas_state_is_unique_per_project():
         saved = client.put(
             f"/api/projects/{first_id}/canvas",
             json=first_state,
-            headers={"X-CSRF-Token": token},
-        )
+            headers={"X-CSRF-Token": token})
         assert saved.status_code == 200
         assert client.get(f"/api/projects/{first_id}/canvas").json()["state"] == first_state
         assert client.get(f"/api/projects/{second_id}/canvas").json()["state"] == {}
@@ -188,8 +196,7 @@ def test_canvas_state_is_unique_per_project():
         assert client.put(
             f"/api/projects/{second_id}/canvas",
             json=second_state,
-            headers={"X-CSRF-Token": token},
-        ).status_code == 200
+            headers={"X-CSRF-Token": token}).status_code == 200
         assert client.get(f"/api/projects/{second_id}/canvas").json()["state"] == second_state
         assert client.get(f"/api/projects/{first_id}/canvas").json()["state"] == first_state
 
@@ -197,8 +204,7 @@ def test_canvas_state_is_unique_per_project():
         assert client.put(
             f"/api/projects/{first_id}/canvas",
             json={"draft": draft},
-            headers={"X-CSRF-Token": token},
-        ).status_code == 200
+            headers={"X-CSRF-Token": token}).status_code == 200
         assert client.get(f"/api/projects/{first_id}/canvas").json()["state"] == {
             **first_state,
             "draft": draft,
@@ -234,9 +240,8 @@ def test_workspace_project_switcher_lists_only_owned_active_projects():
 def test_mutations_require_csrf(monkeypatch):
     profile = ModelProfile(
         id="api:test-image", label="Test Image", provider="api",
-        upstream_model="test-image", enabled=True,
-    )
-    monkeypatch.setattr("image_hub.web.get_profile", lambda _: profile)
+        upstream_model="test-image", enabled=True)
+    monkeypatch.setattr("image_hub.web.get_profile", lambda *_args, **_kwargs: profile)
     with TestClient(app) as client:
         token = login(client)
         project_id = create_project(client, token, "CSRF 项目")
@@ -244,17 +249,15 @@ def test_mutations_require_csrf(monkeypatch):
             f"/api/projects/{project_id}/generations",
             data={"prompt": "不能跨站提交", "profile_id": profile.id, "ratio": "1:1",
                   "resolution": "2K", "quality": "standard",
-                  "idempotency_key": "abcdef1234567890"},
-        )
+                  "idempotency_key": "abcdef1234567890"})
         assert response.status_code == 403
 
 
 def test_generation_submission_is_idempotent_per_project(monkeypatch):
     profile = ModelProfile(
         id="api:test-image", label="Test Image", provider="api",
-        upstream_model="test-image", enabled=True,
-    )
-    monkeypatch.setattr("image_hub.web.get_profile", lambda _: profile)
+        upstream_model="test-image", enabled=True)
+    monkeypatch.setattr("image_hub.web.get_profile", lambda *_args, **_kwargs: profile)
     with TestClient(app) as client:
         token = login(client)
         first_project = create_project(client, token, "幂等项目甲")
@@ -268,20 +271,70 @@ def test_generation_submission_is_idempotent_per_project(monkeypatch):
         second = client.post(
             f"/api/projects/{second_project}/generations",
             data=payload,
-            headers={"X-CSRF-Token": token},
-        )
+            headers={"X-CSRF-Token": token})
         assert first.status_code == duplicate.status_code == second.status_code == 202
         assert first.json()["id"] == duplicate.json()["id"]
         assert second.json()["id"] != first.json()["id"]
+
+
+def test_submission_accepts_models_without_a_quality_dimension(monkeypatch):
+    """没有质量维度的模型（内置表里 qualities 为空）也必须能提交。
+
+    前端给每个节点兜了一个质量值（``profile.qualities?.[0] || 'standard'``），
+    校验不能拿这个值去比对空的能力元组，否则 nano-banana 系列永远 422。
+    """
+    profile = ModelProfile(
+        id="api:test-image", label="Test Image", provider="api",
+        upstream_model="test-image", enabled=True,
+        ratios=("1:1"), resolutions=("2K"), qualities=(), max_references=0)
+    monkeypatch.setattr("image_hub.web.get_profile", lambda *_args, **_kwargs: profile)
+    with TestClient(app) as client:
+        token = login(client)
+        project_id = create_project(client, token, "无质量维度项目")
+        response = client.post(
+            f"/api/projects/{project_id}/generations",
+            data={
+                "prompt": "兜底质量值不该被拒",
+                "profile_id": profile.id,
+                "ratio": "1:1",
+                "resolution": "2K",
+                "quality": "standard",
+                "idempotency_key": "no-quality-dimension-1",
+            },
+            headers={"X-CSRF-Token": token})
+        assert response.status_code == 202
+
+
+def test_submission_still_rejects_unsupported_quality(monkeypatch):
+    """有质量维度的模型照旧要校验：不在清单里的质量仍然拒绝。"""
+    profile = ModelProfile(
+        id="api:test-image", label="Test Image", provider="api",
+        upstream_model="test-image", enabled=True,
+        ratios=("1:1"), resolutions=("2K"), qualities=("medium", "high"), max_references=0)
+    monkeypatch.setattr("image_hub.web.get_profile", lambda *_args, **_kwargs: profile)
+    with TestClient(app) as client:
+        token = login(client)
+        project_id = create_project(client, token, "质量校验项目")
+        response = client.post(
+            f"/api/projects/{project_id}/generations",
+            data={
+                "prompt": "越界的质量必须拒绝",
+                "profile_id": profile.id,
+                "ratio": "1:1",
+                "resolution": "2K",
+                "quality": "standard",
+                "idempotency_key": "unsupported-quality-1",
+            },
+            headers={"X-CSRF-Token": token})
+        assert response.status_code == 422
 
 
 def test_active_task_limit_applies_across_projects(monkeypatch):
     profile = ModelProfile(
         id="api:test-image", label="Test Image", provider="api",
         upstream_model="test-image", enabled=True,
-        ratios=("1:1",), resolutions=("2K",), qualities=("standard",), max_references=0,
-    )
-    monkeypatch.setattr("image_hub.web.get_profile", lambda _: profile)
+        ratios=("1:1",), resolutions=("2K",), qualities=("standard",), max_references=0)
+    monkeypatch.setattr("image_hub.web.get_profile", lambda *_args, **_kwargs: profile)
     monkeypatch.setattr(settings, "max_active_tasks_per_user", 1)
     create_member("limited-member", "额度成员")
     with TestClient(app) as client:
@@ -299,22 +352,19 @@ def test_active_task_limit_applies_across_projects(monkeypatch):
         assert client.post(
             f"/api/projects/{first_project}/generations",
             data=payload,
-            headers={"X-CSRF-Token": token},
-        ).status_code == 202
+            headers={"X-CSRF-Token": token}).status_code == 202
         payload["idempotency_key"] = "limit-key-87654321"
         assert client.post(
             f"/api/projects/{second_project}/generations",
             data=payload,
-            headers={"X-CSRF-Token": token},
-        ).status_code == 429
+            headers={"X-CSRF-Token": token}).status_code == 429
 
 
 def test_concurrent_idempotent_submissions_return_the_same_generation(monkeypatch):
     profile = ModelProfile(
         id="api:test-image", label="Test Image", provider="api",
         upstream_model="test-image", enabled=True,
-        ratios=("1:1",), resolutions=("2K",), qualities=("standard",), max_references=0,
-    )
+        ratios=("1:1",), resolutions=("2K",), qualities=("standard",), max_references=0)
     monkeypatch.setattr(settings, "max_active_tasks_per_user", 50)
     first_entered, release_first, second_attempted = install_submission_race_gate(
         monkeypatch, profile
@@ -355,8 +405,7 @@ def test_concurrent_cross_project_submissions_respect_user_limit(monkeypatch):
     profile = ModelProfile(
         id="api:test-image", label="Test Image", provider="api",
         upstream_model="test-image", enabled=True,
-        ratios=("1:1",), resolutions=("2K",), qualities=("standard",), max_references=0,
-    )
+        ratios=("1:1",), resolutions=("2K",), qualities=("standard",), max_references=0)
     monkeypatch.setattr(settings, "max_active_tasks_per_user", 1)
     first_entered, release_first, second_attempted = install_submission_race_gate(
         monkeypatch, profile
@@ -379,8 +428,7 @@ def test_concurrent_cross_project_submissions_respect_user_limit(monkeypatch):
                     "quality": "standard",
                     "idempotency_key": key,
                 },
-                headers={"X-CSRF-Token": token},
-            )
+                headers={"X-CSRF-Token": token})
 
         with ThreadPoolExecutor(max_workers=2) as executor:
             first_future = executor.submit(
@@ -400,16 +448,154 @@ def test_concurrent_cross_project_submissions_respect_user_limit(monkeypatch):
                 Generation.user_id == session.query(User.id).filter_by(
                     username="concurrent-member"
                 ).scalar_subquery(),
-                Generation.status.in_(("queued", "running")),
-            ).count()
+                Generation.status.in_(("queued", "running"))).count()
             assert active_count == 1
+
+
+# ── 提交路径：慢 IO 必须在写锁之外（2026-09-22 重构） ────────────────────────
+
+
+def _reference_png() -> bytes:
+    """一张**合法**的参考图字节。
+
+    ⚠️ 不能拿 1×1 的占位 PNG：校验要求宽高都不小于 64px，随手几个字节会被 422 挡掉，
+    那样用例测到的就不是它想测的那条路径了。
+    """
+    buffer = io.BytesIO()
+    Image.new("RGB", (120, 120), (70, 130, 180)).save(buffer, format="PNG")
+    return buffer.getvalue()
+
+
+def _reference_profile(max_references: int = 2) -> ModelProfile:
+    return ModelProfile(
+        id="api:test-image", label="Test Image", provider="api",
+        upstream_model="test-image", enabled=True,
+        ratios=("1:1",), resolutions=("2K",), qualities=("standard",),
+        max_references=max_references)
+
+
+def _generation_dirs() -> set[str]:
+    """``storage/generations`` 下现存的目录名 —— 用来抓「孤儿目录」。"""
+    root = settings.storage_root / "generations"
+    if not root.is_dir():
+        return set()
+    return {path.name for path in root.iterdir() if path.is_dir()}
+
+
+def _submit(client: TestClient, token: str, project_id: str, key: str, files=None):
+    return client.post(
+        f"/api/projects/{project_id}/generations",
+        data={
+            "prompt": "锁外落盘",
+            "profile_id": "api:test-image",
+            "ratio": "1:1",
+            "resolution": "2K",
+            "quality": "standard",
+            "idempotency_key": key,
+        },
+        files=files or [],
+        headers={"X-CSRF-Token": token})
+
+
+def test_reference_bytes_are_written_before_the_write_lock(monkeypatch):
+    """参考图字节必须在**取得写锁之前**落盘。
+
+    这是本次重构的核心不变量，而且功能测试**发现不了**它：改回锁内仍然正确，只是
+    变慢 —— 一个人传 80MB 的图会把**所有**用户的提交一起堵住（写锁是全库唯一的）。
+    所以只能直接钉住调用时序。
+    """
+    monkeypatch.setattr(web_module, "get_profile", lambda *_args, **_kwargs: _reference_profile())
+
+    lock = {"held": False}
+    observed: list[bool] = []
+    original_lock = web_module._locked_generation_user
+    original_store = web_module.store_reference
+
+    def tracked_lock(request, session):
+        lock["held"] = True
+        return original_lock(request, session)
+
+    async def tracked_store(generation_id, reference_id, upload):
+        observed.append(lock["held"])
+        return await original_store(generation_id, reference_id, upload)
+
+    monkeypatch.setattr(web_module, "_locked_generation_user", tracked_lock)
+    monkeypatch.setattr(web_module, "store_reference", tracked_store)
+
+    with TestClient(app) as client:
+        token = login(client)
+        project_id = create_project(client, token, "锁外落盘项目")
+        response = _submit(
+            client,
+            token,
+            project_id,
+            "outside-the-lock-key",
+            files=[("references", ("ref.png", _reference_png(), "image/png"))])
+        assert response.status_code == 202, response.text
+
+    assert observed == [False], "参考图字节落盘时**不得**已经持有写锁"
+
+
+def test_duplicate_submission_writes_no_reference_bytes(monkeypatch):
+    """重复提交（同一 ``idempotency_key``）必须在**写盘之前**短路。
+
+    重试最常来自「客户端超时后重发」，而这种时刻恰恰是最不该再搬一遍字节的。
+    不做前置短路的话，每次重发都会把同一份内容重写一遍（再删掉）。
+    """
+    monkeypatch.setattr(web_module, "get_profile", lambda *_args, **_kwargs: _reference_profile())
+
+    written: list[str] = []
+    original_store = web_module.store_reference
+
+    async def tracked_store(generation_id, reference_id, upload):
+        written.append(generation_id)
+        return await original_store(generation_id, reference_id, upload)
+
+    monkeypatch.setattr(web_module, "store_reference", tracked_store)
+    files = [("references", ("ref.png", _reference_png(), "image/png"))]
+
+    with TestClient(app) as client:
+        token = login(client)
+        project_id = create_project(client, token, "幂等不写盘项目")
+        first = _submit(client, token, project_id, "idempotent-no-write-key", files=files)
+        assert first.status_code == 202, first.text
+        assert len(written) == 1
+
+        written.clear()
+        second = _submit(client, token, project_id, "idempotent-no-write-key", files=files)
+        assert second.status_code == 202, second.text
+        assert second.json()["id"] == first.json()["id"]
+
+    assert written == [], "重复提交不得把参考图字节再写一遍"
+
+
+def test_failed_submission_leaves_no_orphan_reference_directory(monkeypatch):
+    """提交被拒时必须清掉阶段 C 已落盘的字节 —— 否则盘上留下无主目录。
+
+    这里用**账号级未完成任务上限**触发拒绝（设成 0 表示任何提交都超限）。
+    """
+    monkeypatch.setattr(web_module, "get_profile", lambda *_args, **_kwargs: _reference_profile())
+    monkeypatch.setattr(settings, "max_active_tasks_per_user", 0)
+
+    before = _generation_dirs()
+    with TestClient(app) as client:
+        token = login(client)
+        project_id = create_project(client, token, "孤儿目录项目")
+        response = _submit(
+            client,
+            token,
+            project_id,
+            "orphan-directory-key",
+            files=[("references", ("ref.png", _reference_png(), "image/png"))])
+        assert response.status_code == 429, response.text
+
+    assert _generation_dirs() == before, "被拒的提交不得留下任何任务目录"
 
 
 def test_external_failure_requires_recovery(monkeypatch):
     profile = ModelProfile(
         id="api:test-image", label="Test Image", provider="api",
-        upstream_model="test-image", enabled=True,
-    )
+        upstream_model="test-image", enabled=True)
 
     def fail_after_submission(generation, _profile):
         generation.external_task_id = "paid-upstream-task"
@@ -429,8 +615,7 @@ def test_external_failure_requires_recovery(monkeypatch):
             parameters_json=json.dumps(
                 {"ratio": "1:1", "resolution": "2K", "quality": "standard"}
             ),
-            status="running",
-        )
+            status="running")
         session.add(generation)
         session.commit()
         generation_id = generation.id
@@ -476,10 +661,20 @@ def test_v1_workspace_contract_has_canvas_ports_without_legacy_surfaces():
         assert 'id="canvas-upload"' in html
         assert 'id="add-request"' in html
         assert f'href="/projects/{project_id}/history"' in html
-        for forbidden in ("Agent", "模板市场", "generation-dock", "recent-panel", "lightbox"):
+        # ⚠️ "Agent" 曾在这个禁忌列表里，但那是 v1 重建（e9927d5）时写下的**预防性**
+        for forbidden in ("模板市场", "generation-dock", "recent-panel", "lightbox"):
             assert forbidden not in html
+        # ⭐ 2026-09-21：Agent 从「弹窗」改成**画布卡片**
+        assert 'id="add-agent"' in html
+        assert "IMAGE_HUB_PROMPT_OPTIMIZE" in html
+        assert "IMAGE_HUB_AGENT" in html
+        assert "addAgentNode" in script
+        assert "convertToAgentNode" in script
+        assert "agent-card-dialog" not in html and "openAgentCard" not in script
+        # 优化改为用户主动触发的独立接口后，提交生成**不能再**带旧字段，
+        assert "data.append('optimize_prompt'" not in script
+        assert "data.append('prompt_optimize_mode'" not in script
         # 3baff7b unified the separate request/result nodes into one generation
-        # node, so the v1 ports are now expressed through these symbols.
         assert "core.GENERATION" in script
         assert "core.batchResults" in script
         assert "orderedInputIds" in script
@@ -510,9 +705,8 @@ def test_public_profiles_expose_capabilities_but_not_api_secrets():
 def test_history_is_independent_and_project_scoped(monkeypatch):
     profile = ModelProfile(
         id="api:history-test", label="History Test", provider="api",
-        upstream_model="history-test", enabled=True,
-    )
-    monkeypatch.setattr("image_hub.web.get_profile", lambda _: profile)
+        upstream_model="history-test", enabled=True)
+    monkeypatch.setattr("image_hub.web.get_profile", lambda *_args, **_kwargs: profile)
     with TestClient(app) as client:
         token = login(client)
         first_id = create_project(client, token, "历史项目 A")
@@ -524,8 +718,7 @@ def test_history_is_independent_and_project_scoped(monkeypatch):
                 "ratio": "1:1", "resolution": "2K", "quality": "standard",
                 "idempotency_key": "history-project-key",
             },
-            headers={"X-CSRF-Token": token},
-        )
+            headers={"X-CSRF-Token": token})
         assert created.status_code == 202
         page = client.get(f"/projects/{first_id}/history")
         assert page.status_code == 200
@@ -555,11 +748,9 @@ def test_admin_can_store_api_config_without_echoing_secret(monkeypatch):
                 "api_key": "server-only-test-key",
                 "models": "image-v1|Studio Image|1:1;3:4|1K;2K|4",
             },
-            follow_redirects=False,
-        )
+            follow_redirects=False)
         assert response.status_code == 303
         # 8ab9491 rewrote the admin overview to show per-provider model counts,
-        # so the stored model label now surfaces on the provider config page.
         admin_html = client.get("/admin").text
         provider_html = client.get("/admin/providers").text
         assert "Studio Image" in provider_html
@@ -606,11 +797,10 @@ def test_queued_api_generation_keeps_submission_route_after_admin_edit(monkeypat
                     "profile_id": profile.id,
                     "ratio": "1:1",
                     "resolution": "2K",
-                    "quality": "standard",
+                    "quality": "auto",
                     "idempotency_key": "frozen-route-1234",
                 },
-                headers={"X-CSRF-Token": token},
-            )
+                headers={"X-CSRF-Token": token})
             assert response.status_code == 202
             generation_id = response.json()["id"]
 
@@ -667,14 +857,12 @@ def test_legacy_api_profile_ids_resolve_or_remain_explicitly_unavailable(monkeyp
                             label="Legacy Model",
                             provider="api",
                             upstream_model="legacy-model",
-                            enabled=True,
-                        ).public_dict()
+                            enabled=True).public_dict()
                     ),
                     parameters_json=json.dumps(
                         {"ratio": "3:4", "resolution": "2K", "quality": "standard"}
                     ),
-                    status="succeeded",
-                )
+                    status="succeeded")
                 session.add(generation)
                 session.commit()
                 generation_id = generation.id
@@ -697,8 +885,7 @@ def test_legacy_api_profile_ids_resolve_or_remain_explicitly_unavailable(monkeyp
                         },
                     ]
                 },
-                headers={"X-CSRF-Token": token},
-            )
+                headers={"X-CSRF-Token": token})
             assert saved.status_code == 200
             loaded_state = client.get(f"/api/projects/{project_id}/canvas").json()["state"]
             loaded_nodes = loaded_state["nodes"]
@@ -731,8 +918,7 @@ def test_legacy_api_profile_ids_resolve_or_remain_explicitly_unavailable(monkeyp
                     "quality": "standard",
                     "idempotency_key": "legacy-blocked-1234",
                 },
-                headers={"X-CSRF-Token": token},
-            )
+                headers={"X-CSRF-Token": token})
             assert blocked.status_code == 503
     finally:
         if original_config is None:
@@ -744,14 +930,12 @@ def test_legacy_api_profile_ids_resolve_or_remain_explicitly_unavailable(monkeyp
 def test_ambiguous_legacy_and_opaque_api_id_fails_closed(monkeypatch):
     opaque_match = ModelProfile(
         id="api:collision", label="Opaque match", provider="api",
-        upstream_model="different-model", enabled=True,
-    )
+        upstream_model="different-model", enabled=True)
     legacy_match = ModelProfile(
         id="api:other-opaque", label="Legacy match", provider="api",
-        upstream_model="collision", enabled=True,
-    )
+        upstream_model="collision", enabled=True)
     monkeypatch.setattr(
-        provider_module, "model_profiles", lambda: (opaque_match, legacy_match)
+        provider_module, "model_profiles", lambda *_args, **_kwargs: (opaque_match, legacy_match)
     )
 
     assert provider_module.get_profile("api:collision") is None
@@ -759,7 +943,7 @@ def test_ambiguous_legacy_and_opaque_api_id_fails_closed(monkeypatch):
 
 
 def test_history_uses_distinct_locate_and_continue_actions():
-    script = (settings.static_dir / "history.js").read_text()
+    script = (settings.static_dir / "history.js").read_text(encoding="utf-8")
     assert "?action=locate&amp;generation=" in script
     assert "?action=continue&amp;generation=" in script
     assert "?reuse=" not in script
@@ -772,8 +956,7 @@ def test_member_cannot_open_another_users_history():
             User(
                 username="history-member",
                 display_name="历史普通成员",
-                password_hash=admin.password_hash,
-            )
+                password_hash=admin.password_hash)
         )
         session.commit()
     with TestClient(app) as admin_client:

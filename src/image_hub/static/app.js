@@ -6,6 +6,7 @@
   if (!core) throw new Error('画布核心模块未加载');
   const projectId = window.IMAGE_HUB_PROJECT_ID || '';
   const csrfHeaders = {'X-CSRF-Token': window.IMAGE_HUB_CSRF || ''};
+  const promptOptimizeConfig = window.IMAGE_HUB_PROMPT_OPTIMIZE || {categories: [], work_types: [], defaults: {}};
   const $ = (selector, root = document) => root.querySelector(selector);
   const $$ = (selector, root = document) => [...root.querySelectorAll(selector)];
   const providerNames = {libtv: 'LibTV', lovart: 'Lovart', api: 'API'};
@@ -29,6 +30,8 @@
   let pollTimer = null;
   let drag = null;
   let pan = null;
+  /* 拉宽卡片：只改宽度，高度始终由内容决定。 */
+  let resizing = null;
   let minimapDrag = null;
   let minimapGeometry = null;
   let resizeObserver = null;
@@ -38,6 +41,9 @@
   let pendingUploadPoint = null;
   let activePickerId = '';
   let activePickerKind = '';
+  /* 「Agent 生图器」的结构化轴。**唯一定义在后端**（agent.options_payload()），
+     前端只负责渲染，不抄第二份选项表。 */
+  const agentConfig = (typeof window !== 'undefined' && window.IMAGE_HUB_AGENT) || {};
   const pickerProviders = new Map();
   let context = null;
   let escapeArmed = false;
@@ -60,6 +66,9 @@
     download: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 4v11m-4-4 4 4 4-4M5 19h14"/></svg>',
     remove: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 7h14M9 7V4h6v3m-8 0 1 13h8l1-13M10 11v5m4-5v5"/></svg>',
     chevron: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="m7 10 5 5 5-5"/></svg>',
+    sparkle: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3l1.9 4.9L18.8 9.8 13.9 11.7 12 16.6 10.1 11.7 5.2 9.8l4.9-1.9L12 3Z"/><path d="M18.6 13.4l.8 2.1 2.1.8-2.1.8-.8 2.1-.8-2.1-2.1-.8 2.1-.8.8-2.1Z"/></svg>',
+    duplicate: '<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="9" y="9" width="10" height="10" rx="2"/><path d="M15 5.5A1.5 1.5 0 0 0 13.5 4h-8A1.5 1.5 0 0 0 4 5.5v8A1.5 1.5 0 0 0 5.5 15"/></svg>',
+    unlink: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="m10 14 4-4"/><path d="M12.5 7.5 14 6a3.5 3.5 0 0 1 5 5l-1.5 1.5"/><path d="M11.5 16.5 10 18a3.5 3.5 0 0 1-5-5l1.5-1.5"/></svg>',
     close: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 6 12 12M18 6 6 18"/></svg>'
   });
   function downloadUrl(url) { if (!url) return ''; return `${url}${url.includes('?') ? '&' : '?'}download=true`; }
@@ -70,16 +79,17 @@
       try { name = decodeURIComponent(name); } catch { /* keep the raw header value */ }
       if (name.toLowerCase().endsWith('.png')) return name;
     }
-    const tail = String(url || '').split('?')[0].split('/').filter(Boolean).pop() || 'xgm-ai-image-hub';
-    return `${tail.replace(/\.[a-z0-9]+$/i, '') || 'xgm-ai-image-hub'}.png`;
+    const tail = String(url || '').split('?')[0].split('/').filter(Boolean).pop() || 'image';
+    return `${tail.replace(/\.[a-z0-9]+$/i, '') || 'image'}.png`;
   }
   function toast(message, error = false) { const el = $('#toast'); el.textContent = message; el.className = `toast show${error ? ' error' : ''}`; window.setTimeout(() => { el.className = 'toast'; }, 2400); }
   async function responseJson(response) { const payload = await response.json().catch(() => ({})); if (response.status === 401) location.href = '/login'; if (!response.ok) throw new Error(payload.detail || '操作失败'); return payload; }
   function profileById(id) { return core.profileById(models, id); }
   function providerLabel(value) { return providerNames[value] || value || '平台'; }
   function comboValue(ratio, resolution) { return `${ratio}|${resolution}`; }
-  /* The server sends a per-ratio tier map for Lovart models (some ratios have no
-     4K). Fall back to the flat resolution list for providers that do not. */
+  /* The server sends a per-ratio tier map, because some ratios do not publish every
+     tier (Lovart's 1:3/3:1 stop at 2K; Grsai's start at 2K). Fall back to the flat
+     resolution list for providers that do not narrow anything. */
   function profileTiers(profile, ratio) {
     if (!profile) return [];
     const mapped = profile.tiers?.[ratio];
@@ -89,6 +99,8 @@
 
   function nodeById(id) { return state.nodes.find(node => node.id === id); }
   function generationNodes() { return state.nodes.filter(core.isGenerationNode); }
+  /* 能接参考图的节点：生图节点之外，文本节点也能接一张图（用作「反推提示词」的原料）。 */
+  function inputNodes() { return state.nodes.filter(node => core.isGenerationNode(node) || core.isTextNode(node)); }
   function worldPoint(clientX, clientY) { const rect = $('#canvas-viewport').getBoundingClientRect(); return {x: (clientX - rect.left - state.viewport.x) / state.viewport.zoom, y: (clientY - rect.top - state.viewport.y) / state.viewport.zoom}; }
   function serializeNode(node) { const copy = {...node}; if (copy.localOnly) copy.src = ''; delete copy.uploading; delete copy.submitting; delete copy.dirty; return copy; }
 
@@ -129,7 +141,8 @@
   function addGeneration(x, y, inherited = {}) { const node = defaultGeneration(x, y, inherited); state.nodes.push(node); selectNode(node.id, false, false); render(); scheduleLayoutRecompute(); scheduleSave(); if (node.expanded) requestAnimationFrame(() => $(`[data-node-id="${node.id}"] textarea`)?.focus()); return node; }
   function addInput(nodeId, ref) {
     const node = nodeById(nodeId);
-    if (!core.isGenerationNode(node)) return false;
+    // 生图节点接参考图；文本节点也接一张图 —— 那是「反推提示词」的原料。
+    if (!core.isGenerationNode(node) && !core.isTextNode(node)) return false;
     const parsed = core.parseResultRefId(ref);
     if (parsed && parsed.nodeId === nodeId) { toast('不能引用本节点自己的结果', true); return false; }
     if (!core.resolveInputRef(state.nodes, ref)) return false;
@@ -139,6 +152,64 @@
     syncDirty(node);
     render(); scheduleSave();
     return true;
+  }
+
+  /* ---- 文本卡 → 生图卡：提示词来源 -----------------------------------------
+     连线只记在生图卡的 `promptSourceId` 上，文本本身**镜像**进 `prompt`。这样提交、
+     脏标记、请求快照都不必知道连线的存在；改文本卡时两边一起变。
+     断开时用连线前存下的 `promptBackup` 把用户手写的内容还回去。 */
+  function linkPromptSource(node, source) {
+    if (!core.isGenerationNode(node) || !core.isTextNode(source)) return false;
+    if (node.promptSourceId === source.id) { toast('这张文本卡已经在给它提供提示词'); return false; }
+    // 换一张文本卡时先断开旧的，让备份回到「用户手写的那份」再重新存。
+    if (node.promptSourceId) unlinkPromptSource(node, {silent: true, render: false});
+    node.promptBackup = node.prompt || '';
+    node.promptSourceId = source.id;
+    node.prompt = source.text || '';
+    syncDirty(node);
+    render(); scheduleSave();
+    toast('已接上文本卡，提示词跟着它走');
+    return true;
+  }
+
+  function unlinkPromptSource(node, options = {}) {
+    if (!core.isGenerationNode(node) || !node.promptSourceId) return false;
+    node.promptSourceId = '';
+    node.prompt = node.promptBackup || '';
+    node.promptBackup = '';
+    syncDirty(node);
+    if (options.render !== false) { render(); scheduleSave(); }
+    if (!options.silent) toast('已断开提示词连线，可以自己写了');
+    return true;
+  }
+
+  /* 改文本卡 → 所有挂着它的生图卡立刻跟着变。只改输入框的 value，
+     不整块重渲染，免得正在打字的光标被打断。 */
+  function syncLinkedPrompts(textNode) {
+    if (!core.isTextNode(textNode)) return false;
+    let changed = false;
+    state.nodes.forEach(node => {
+      if (!core.isGenerationNode(node) || node.promptSourceId !== textNode.id) return;
+      if (node.prompt === textNode.text) return;
+      node.prompt = textNode.text;
+      syncDirty(node);
+      const field = $(`[data-node-id="${node.id}"] textarea[data-field="prompt"]`);
+      if (field) field.value = node.prompt;
+      changed = true;
+    });
+    return changed;
+  }
+
+  /* 打开画布时补齐镜像：文本卡可能是关页面前改的，来源也可能已随数据消失。 */
+  function reconcilePromptSources() {
+    let changed = false;
+    state.nodes.forEach(node => {
+      if (!core.isGenerationNode(node) || !node.promptSourceId) return;
+      const source = core.promptSourceNode(state.nodes, node);
+      if (!source) { node.promptSourceId = ''; node.promptBackup = ''; changed = true; return; }
+      if (node.prompt !== (source.text || '')) { node.prompt = source.text || ''; changed = true; }
+    });
+    return changed;
   }
 
   function removeIds(ids) {
@@ -165,11 +236,10 @@
   function linkKey(source, target) { return `${target}::${source}`; }
   function linkTarget(key) { const at = key.indexOf('::'); return at < 0 ? '' : key.slice(0, at); }
   function linkSource(key) { const at = key.indexOf('::'); return at < 0 ? '' : key.slice(at + 2); }
+  /* 一条连线只要还在数据里就算活的。三种都算：生图卡接参考图、生图卡接提示词来源、
+     文本卡接反推原料。 */
   function liveLinkKeys() {
-    return [...state.selectedLinks].filter(key => {
-      const target = nodeById(linkTarget(key));
-      return core.isGenerationNode(target) && (target.orderedInputIds || []).includes(linkSource(key));
-    });
+    return [...state.selectedLinks].filter(key => core.hasLiveLink(nodeById(linkTarget(key)), linkSource(key)));
   }
   /* Presentation-only, exactly like syncSelectionClasses: toggling a class
      avoids re-rendering the SVG under the pointer. */
@@ -205,7 +275,9 @@
   /* Removing a connection drops that one reference from the target card's
      ordered input list. Everything that is not that exact entry keeps its
      relative position, and uploads, results and Generations are untouched.
-     A key whose reference is already gone is a silent no-op. */
+     A key whose reference is already gone is a silent no-op.
+     文本卡也能当落点（反推原料），生图卡上的提示词连线则走 promptSourceId ——
+     断开时把它连线前手写的内容还回去。 */
   function removeLinks(keys) {
     const byTarget = new Map();
     keys.forEach(key => {
@@ -217,7 +289,11 @@
     let removed = 0;
     byTarget.forEach((sources, targetId) => {
       const node = nodeById(targetId);
-      if (!core.isGenerationNode(node) || !Array.isArray(node.orderedInputIds)) return;
+      if (!core.isGenerationNode(node) && !core.isTextNode(node)) return;
+      if (core.isGenerationNode(node) && sources.has(node.promptSourceId)) {
+        unlinkPromptSource(node); removed += 1;
+      }
+      if (!Array.isArray(node.orderedInputIds)) return;
       const next = node.orderedInputIds.filter(ref => { if (!sources.has(ref)) return true; removed += 1; return false; });
       if (next.length === node.orderedInputIds.length) return;
       node.orderedInputIds = next; syncDirty(node);
@@ -251,12 +327,15 @@
   function pickerOpen(node, kind) { return activePickerId === node.id && activePickerKind === kind; }
   function ratioPreview(ratio) { return `<span class="ratio-preview" style="--ratio:${escapeHtml(ratio.replace(':', '/'))}" aria-hidden="true"></span>`; }
   function modelPickerMarkup(node, profile) {
-    const grouped = models.reduce((map, item) => { (map[item.provider] ||= []).push(item); return map; }, {});
+    /* Agent 生图器只支持 API 渠道（服务端同一条校验）：把候选收窄到 API，
+       免得用户选到平台渠道的模型后拿到一次必然失败的提交。 */
+    const candidates = node.agentSpec ? models.filter(item => item.provider === 'api') : models;
+    const grouped = candidates.reduce((map, item) => { (map[item.provider] ||= []).push(item); return map; }, {});
     const selectedProvider = pickerProviders.get(node.id) || profile?.provider || Object.keys(grouped)[0] || '';
     const label = profile ? `${providerLabel(profile.provider)} · ${profile.label}` : '请选择平台与模型';
     const isOpen = pickerOpen(node, 'model');
     const visible = grouped[selectedProvider] || [];
-    return `<div class="visual-picker model-picker"><button type="button" class="selector-trigger" data-model-trigger aria-expanded="${isOpen}" aria-haspopup="dialog" aria-controls="models-${node.id}"><span>${escapeHtml(label)}</span>${icons.chevron}</button><div class="selector-popover" id="models-${node.id}" role="dialog" aria-label="平台与模型" ${isOpen ? '' : 'hidden'}><header><strong>平台与模型</strong><button type="button" data-close-picker aria-label="关闭平台与模型">${icons.close}</button></header><section class="selector-section"><span>平台</span><div class="provider-chips" role="tablist" aria-label="平台">${Object.keys(grouped).map(provider => `<button type="button" role="tab" data-provider-option="${escapeHtml(provider)}" aria-selected="${provider === selectedProvider}" tabindex="${provider === selectedProvider ? '0' : '-1'}">${escapeHtml(providerLabel(provider))}</button>`).join('')}</div></section><section class="selector-section"><span>模型</span><div class="model-card-grid" role="radiogroup" aria-label="模型">${visible.map(item => `<button type="button" role="radio" data-profile-option="${escapeHtml(item.id)}" aria-checked="${item.id === node.profileId}" ${item.enabled ? '' : 'disabled'}><span>${escapeHtml(item.label)}</span><small>${item.enabled ? (item.id === node.profileId ? '已选择' : '可用') : '未配置'}</small>${item.id === node.profileId ? '<b aria-hidden="true">✓</b>' : ''}</button>`).join('')}</div></section></div></div>`;
+    return `<div class="visual-picker model-picker"><button type="button" class="selector-trigger" data-model-trigger aria-expanded="${isOpen}" aria-haspopup="dialog" aria-controls="models-${node.id}"><span>${escapeHtml(label)}</span>${icons.chevron}</button><div class="selector-popover" id="models-${node.id}" role="dialog" aria-label="平台与模型" ${isOpen ? '' : 'hidden'}><header><strong>平台与模型</strong><button type="button" data-close-picker aria-label="关闭平台与模型">${icons.close}</button></header><section class="selector-section"><span>平台</span><div class="provider-chips" role="tablist" aria-label="平台">${Object.keys(grouped).map(provider => `<button type="button" role="tab" data-provider-option="${escapeHtml(provider)}" aria-selected="${provider === selectedProvider}" tabindex="${provider === selectedProvider ? '0' : '-1'}">${escapeHtml(providerLabel(provider))}</button>`).join('')}</div></section><section class="selector-section"><span>模型</span><div class="model-card-grid" role="radiogroup" aria-label="模型">${visible.map(item => { /* 状态小字后面接后端配置的模型介绍（「可用 · 介绍」）。介绍只由服务端下发，但卡片很扁（三列 40px），名字和介绍都可能被截断，所以两者都把完整文案挂到 title 上。 */ const status = item.enabled ? (item.id === node.profileId ? '已选择' : '可用') : '未配置'; const note = item.enabled ? (item.note || '') : ''; const tip = note ? `${item.label} · ${note}` : item.label; return `<button type="button" role="radio" data-profile-option="${escapeHtml(item.id)}" aria-checked="${item.id === node.profileId}" ${item.enabled ? '' : 'disabled'} title="${escapeHtml(tip)}"><span>${escapeHtml(item.label)}</span><small title="${escapeHtml(note)}">${status}${note ? ` · ${escapeHtml(note)}` : ''}</small>${item.id === node.profileId ? '<b aria-hidden="true">✓</b>' : ''}</button>`; }).join('')}</div></section></div></div>`;
   }
   function imageSettingsPickerMarkup(node, profile) {
     const isOpen = pickerOpen(node, 'image');
@@ -284,7 +363,11 @@
     if (status === 'empty') return '待生成';
     if (status === 'succeeded') return `已完成 ${results.length} 张`;
     if (status === 'partial') return `已完成 ${results.filter(result => result.status === 'succeeded').length}/${results.length} 张`;
-    if (status === 'recovery_required') return '需要恢复';
+    if (status === 'recovery_required') {
+      // 等待上游的时候说"生成中"，只有真的带错误信息才叫"需要恢复"。
+      const waiting = !(core.batchResults(node.activeBatch).map(result => result.error).find(Boolean));
+      return waiting ? '生成中' : '需要恢复';
+    }
     return '生成失败';
   }
   function primaryOf(node) {
@@ -305,10 +388,15 @@
   }
   function resultTileMarkup(node, result, primaryId, showPrimaryTag) {
     const succeeded = result.status === 'succeeded' && Boolean(result.artifactUrl);
-    const failed = ['failed', 'recovery_required'].includes(result.status);
+    /* ⭐ 「上游还在生成」不是失败：recovery_required 且**没有错误信息**时按「生成中」渲染
+       （中性配色 + 转圈），别给用户一张红卡 —— 用户实测反馈就是被那个红色误导成坏了。 */
+    const waiting = result.status === 'recovery_required' && !result.error;
+    const failed = ['failed', 'recovery_required'].includes(result.status) && !waiting;
+    const stateClass = waiting ? 'processing' : result.status;
+    const stateText = waiting ? '生成中，稍后自动取回' : (statusNames[result.status] || '生成中');
     const media = succeeded
       ? `<img src="${escapeHtml(result.artifactUrl)}" alt="生成结果" loading="lazy">`
-      : `<div class="result-state ${escapeHtml(result.status)}"><span class="status-spinner"></span><strong>${escapeHtml(statusNames[result.status] || '生成中')}</strong>${result.error ? `<small>${escapeHtml(result.error)}</small>` : ''}${failed && result.canRetry && result.generationId ? `<button class="retry-action" type="button" data-retry-generation="${escapeHtml(result.generationId)}">安全重试</button>` : ''}</div>`;
+      : `<div class="result-state ${escapeHtml(stateClass)}"><span class="status-spinner"></span><strong>${escapeHtml(stateText)}</strong>${result.error ? `<small>${escapeHtml(result.error)}</small>` : ''}${failed && result.canRetry && result.generationId ? `<button class="retry-action" type="button" data-retry-generation="${escapeHtml(result.generationId)}">安全重试</button>` : ''}</div>`;
     const isPrimary = Boolean(primaryId) && primaryId === result.id;
     return `<div class="result-tile${isPrimary ? ' primary' : ''}${succeeded ? ' ready' : ' pending'}" data-result-id="${escapeHtml(result.id)}">${media}${isPrimary && showPrimaryTag ? '<span class="primary-tag">主图</span>' : ''}${succeeded ? `<button class="tile-port" type="button" tabindex="-1" data-tile-ref="${escapeHtml(core.resultRefId(node.id, result.id))}" aria-label="从此结果创建连接"></button>` : ''}</div>`;
   }
@@ -337,11 +425,102 @@
       : core.batchResults(node.attempt).filter(result => result.canRetry && result.generationId).map(result => `<button class="retry-action" type="button" data-retry-generation="${escapeHtml(result.generationId)}">安全重试</button>`).join('');
     return `<p class="generation-error" role="status"><span>${escapeHtml(node.error)}</span>${retries}</p>`;
   }
+  /* Read-only display of the prompt actually sent to the model. The backend
+     folds the original prompt into `effective_prompt` (== optimized_prompt when
+     optimization ran), so we surface effective_prompt and never write it back
+     into the editable prompt box. A failed optimization keeps the original
+     prompt, which we report as a note. The mode (small tag) and the agent
+     diagnosis note are read-only too, both escaped via escapeHtml (no innerHTML
+     injection). */
+  function promptOptimizeMarkup(node) {
+    const batch = displayBatch(node);
+    if (!batch) return '';
+    const primary = primaryOf(node) || core.batchResults(batch)[0];
+    if (!primary) return '';
+    const optimized = primary.optimized_prompt || '';
+    const effective = primary.effective_prompt || optimized;
+    const stateFlag = primary.prompt_optimize_state || 'none';
+    const mode = primary.prompt_optimize_mode || '';
+    const note = primary.prompt_optimize_note || '';
+    if (!optimized && stateFlag !== 'failed' && stateFlag !== 'skipped' && !note && !mode) return '';
+    let html = '';
+    if (optimized) {
+      const modeTag = mode === 'agent' ? 'Agent 模式' : mode === 'optimize' ? '提示词优化' : '';
+      html += '<div class="prompt-optimize-detail">' +
+        (modeTag ? '<span class="prompt-optimize-mode-tag">' + escapeHtml(modeTag) + '</span>' : '') +
+        '<span class="prompt-optimize-label">实际使用的提示词（已优化）</span>' +
+        '<p class="prompt-optimize-text">' + escapeHtml(effective) + '</p></div>';
+    }
+    if (note) {
+      html += '<div class="prompt-optimize-note-block"><span class="prompt-optimize-label">诊断结论</span>' +
+        '<p class="prompt-optimize-note-text">' + escapeHtml(note) + '</p></div>';
+    }
+    if (stateFlag === 'failed') {
+      html += '<p class="prompt-optimize-note" role="status">提示词优化失败，已按原始提示词生成</p>';
+    } else if (stateFlag === 'skipped') {
+      html += '<p class="prompt-optimize-note" role="status">该优化模式未启用，已跳过</p>';
+    }
+    return html;
+  }
+  /* Text-mode优化按钮：纯 icon，放在提示词框右上角（见 generationEditorMarkup）。
+     点击把当前节点的提示词交给 /api/prompt-optimize（mode=optimize），成功写回
+     输入框并更新余额，失败不动原文、toast 显示原因。忙碌态防重复点击。 */
+  function promptOptimizeEditorMarkup(node) {
+    const label = '优化提示词';
+    const title = '优化提示词：用通用电商提示词改写当前文本';
+    /* 接上文本卡后这个框是只读镜像：内容归那张卡管，所以既不给优化按钮
+       （会改到镜像、下次打字又被覆盖），也不加 required（只读的必填框没法满足）。
+       角标是断开入口；右键连线或选中按 Delete 同样能断。 */
+    if (core.promptSourceNode(state.nodes, node)) {
+      return `<div class="prompt-editor is-linked"><div class="prompt-editor-head">` +
+        `<label class="prompt-label" for="prompt-${escapeHtml(node.id)}">提示词</label>` +
+        `<button type="button" class="prompt-link-badge" data-unlink-prompt title="由文本卡提供；点这里断开并恢复手写提示词">${icons.unlink}<span>由文本卡提供</span></button></div>` +
+        `<textarea id="prompt-${escapeHtml(node.id)}" data-field="prompt" readonly placeholder="（文本卡是空的）">${escapeHtml(node.prompt)}</textarea></div>`;
+    }
+    return `<div class="prompt-editor"><div class="prompt-editor-head">` +
+      `<label class="prompt-label" for="prompt-${escapeHtml(node.id)}">提示词</label>` +
+      `<button type="button" class="prompt-optimize-icon" data-optimize-text aria-label="${escapeHtml(label)}" title="${escapeHtml(title)}">${icons.sparkle}</button></div>` +
+      `<textarea id="prompt-${escapeHtml(node.id)}" data-field="prompt" maxlength="12000" required placeholder="描述要生成或修改的画面">${escapeHtml(node.prompt)}</textarea></div>`;
+  }
+  async function optimizePromptText(button) {
+    const nodeEl = button.closest('.generation-node');
+    const node = nodeEl && nodeById(nodeEl.dataset.nodeId);
+    if (!node) return;
+    if (!node.prompt.trim()) { toast('请先输入提示词再优化', true); return; }
+    if (button.disabled) return;
+    button.disabled = true;
+    button.classList.add('busy');
+    try {
+      const data = new FormData();
+      data.append('prompt', node.prompt.trim());
+      data.append('mode', 'optimize');
+      const payload = await responseJson(await fetch('/api/prompt-optimize', {method: 'POST', headers: csrfHeaders, body: data}));
+      /* 写回可编辑的提示词框；失败路径不执行这里，原文保留。 */
+      node.prompt = payload.prompt;
+      const textarea = $(`[data-node-id="${node.id}"] textarea[data-field="prompt"]`);
+      if (textarea) textarea.value = payload.prompt;
+      syncDirty(node); scheduleSave();
+      toast('提示词已优化');
+    } catch (error) {
+      toast(error.message || '优化失败', true);
+    } finally {
+      button.disabled = false;
+      button.classList.remove('busy');
+    }
+  }
   function inputRowsMarkup(node) {
+    /* Agent 生图器：每张参考图可以标一个职责；**留空是合法默认**（由服务端/模型判断），
+       所以空选项排在最前并带说明文案（文案来自后端，前端不抄第二份）。 */
     return (node.orderedInputIds || []).map((ref, index) => {
       const source = core.resolveInputRef(state.nodes, ref);
+      const rolePicker = node.agentSpec
+        ? `<select class="agent-role" data-agent-role="${escapeHtml(ref)}" aria-label="图${index + 1} 的职责">`
+          + `<option value="">${escapeHtml(agentConfig.unlabeled_role_label || '留空（由服务端判断）')}</option>`
+          + (agentConfig.reference_roles || []).map(role => `<option value="${escapeHtml(role.key)}" ${(node.agentRoles || {})[ref] === role.key ? 'selected' : ''}>${escapeHtml(role.label)}</option>`).join('')
+          + `</select>`
+        : '';
       if (!source) return `<li class="missing" data-input-id="${escapeHtml(ref)}" data-request-id="${node.id}"><span>图${index + 1} 已失效</span><button type="button" data-remove-input="${escapeHtml(ref)}" aria-label="移除图${index + 1}">×</button></li>`;
-      return `<li draggable="true" data-input-id="${escapeHtml(ref)}" data-request-id="${node.id}"><span class="input-index">图${index + 1}</span><img src="${escapeHtml(source.src)}" alt=""><span class="drag-label">拖动排序</span><button type="button" data-remove-input="${escapeHtml(ref)}" aria-label="移除图${index + 1}">×</button></li>`;
+      return `<li draggable="true" data-input-id="${escapeHtml(ref)}" data-request-id="${node.id}"><span class="input-index">图${index + 1}</span><img src="${escapeHtml(source.src)}" alt="">${rolePicker}<span class="drag-label">拖动排序</span><button type="button" data-remove-input="${escapeHtml(ref)}" aria-label="移除图${index + 1}">×</button></li>`;
     }).join('');
   }
   function sentimentRowMarkup(node) {
@@ -357,7 +536,39 @@
     const busy = node.submitting || Boolean(node.attempt && !node.attempt.settled);
     const hasBatch = Boolean(displayBatch(node));
     const label = node.submitting ? '正在提交…' : busy ? '生成中…' : hasBatch ? '重新生成' : '生成图片';
-    return `<div class="generation-editor">${rows ? `<ol class="request-inputs">${rows}</ol>` : '<p class="no-inputs">无参考图，可直接文生图</p>'}<label class="prompt-label">提示词<textarea data-field="prompt" maxlength="12000" required placeholder="描述要生成或修改的画面">${escapeHtml(node.prompt)}</textarea></label><label>平台 · 模型${modelPickerMarkup(node, profile)}</label><div class="request-settings"><label>比例 · 分辨率${imageSettingsPickerMarkup(node, profile)}</label><label>数量<select data-field="count">${[1, 2, 3, 4].map(value => `<option value="${value}" ${value === Number(node.count) ? 'selected' : ''}>${value} 张</option>`).join('')}</select></label></div>${quality}${sentimentRowMarkup(node)}${availability.enabled ? '' : `<p class="unavailable-model" role="status">${escapeHtml(availability.message)}</p>`}<button class="generate-button" type="button" data-generate ${availability.enabled && !busy ? '' : 'disabled'}>${label}</button></div>`;
+    /* Agent 生图器：轴在前端直接选（不再走弹窗），比例由服务端按平台规范推导，
+       所以这一支不渲染比例/分辨率选择器，只留模型、数量与轴。 */
+    if (node.agentSpec) {
+      const planReady = agentConfig.plan_available !== false;
+      return `<div class="generation-editor agent-node-editor">${rows ? `<ol class="request-inputs">${rows}</ol>` : '<p class="no-inputs">无参考图，可直接文生图</p>'}`
+        + promptOptimizeEditorMarkup(node)
+        + agentAxesMarkup(node)
+        + `<label>模型${modelPickerMarkup(node, profile)}</label>`
+        + `<div class="request-settings"><label>数量<select data-field="count">${[1, 2, 3, 4].map(value => `<option value="${value}" ${value === Number(node.count) ? 'selected' : ''}>${value} 张</option>`).join('')}</select></label></div>`
+        + quality + sentimentRowMarkup(node)
+        + (planReady ? '' : '<p class="unavailable-model" role="status">Agent 生图器暂不可用：服务端还没有配置提示词计划 skill（plan），配置后即可提交。</p>')
+        + (availability.enabled ? '' : `<p class="unavailable-model" role="status">${escapeHtml(availability.message)}</p>`)
+        + `<button class="generate-button" type="button" data-generate ${availability.enabled && planReady && !busy ? '' : 'disabled'}>${label}</button></div>`;
+    }
+    return `<div class="generation-editor">${rows ? `<ol class="request-inputs">${rows}</ol>` : '<p class="no-inputs">无参考图，可直接文生图</p>'}${promptOptimizeEditorMarkup(node)}<label>平台 · 模型${modelPickerMarkup(node, profile)}</label><div class="request-settings"><label>比例 · 分辨率${imageSettingsPickerMarkup(node, profile)}</label><label>数量<select data-field="count">${[1, 2, 3, 4].map(value => `<option value="${value}" ${value === Number(node.count) ? 'selected' : ''}>${value} 张</option>`).join('')}</select></label></div>${quality}${sentimentRowMarkup(node)}${availability.enabled ? '' : `<p class="unavailable-model" role="status">${escapeHtml(availability.message)}</p>`}<button class="agent-mode-button" type="button" data-to-agent aria-label="转为 Agent 生图器" title="转为 Agent 生图器：补上平台/市场/类目/工作类型/卖点这些轴（保留提示词与参考图）">转为 Agent 生图器</button><button class="generate-button" type="button" data-generate ${availability.enabled && !busy ? '' : 'disabled'}>${label}</button></div>`;
+  }
+  /* Agent 轴：平台 / 市场 / 类目 / 工作类型 / 卖点（+ 卖点自由补充）。
+     选项来自后端 agent_options，`data-agent-field` 与普通 `data-field` 分开处理。 */
+  function agentAxisSelect(field, label, options, current) {
+    const items = Array.isArray(options) ? options : [];
+    if (!items.length) return '';
+    return `<label>${escapeHtml(label)}<select data-agent-field="${field}">${items.map(item => `<option value="${escapeHtml(item.key)}" ${item.key === current ? 'selected' : ''}>${escapeHtml(item.label)}</option>`).join('')}</select></label>`;
+  }
+  function agentAxesMarkup(node) {
+    const spec = node.agentSpec || {};
+    return `<fieldset class="agent-axes"><legend>Agent 轴</legend>`
+      + agentAxisSelect('platform', '平台', agentConfig.platforms, spec.platform)
+      + agentAxisSelect('market', '市场', agentConfig.markets, spec.market)
+      + agentAxisSelect('category', '类目', agentConfig.categories, spec.category)
+      + agentAxisSelect('work_type', '工作类型', agentConfig.work_types, spec.work_type)
+      + agentAxisSelect('selling_point', '卖点', agentConfig.selling_points, spec.selling_point)
+      + `<label>卖点补充（可选）<input data-agent-field="selling_point_text" maxlength="200" value="${escapeHtml(spec.selling_point_text || '')}" placeholder="枚举里没有的卖点写这里"></label>`
+      + `</fieldset>`;
   }
   /* The rail owns the single result-count readout; the header only reports the
      input count (plus a status while no result summary exists yet). The card's
@@ -383,17 +594,173 @@
     const expanded = Boolean(node.expanded);
     const media = batch ? resultGridMarkup(node, batch, Boolean(activeBatch)) : '';
     const inputMeta = `${inputs} 张输入${batch ? '' : ` · ${escapeHtml(generationStatusText(node))}`}`;
-    const classes = ['canvas-node', 'generation-node', expanded ? 'expanded' : '', batch ? 'has-results' : '', state.selectedIds.has(node.id) ? 'selected' : '', node.dirty ? 'dirty' : ''].filter(Boolean).join(' ');
-    return `<article class="${classes}" data-node-id="${node.id}" data-node-type="${core.GENERATION}" aria-selected="${state.selectedIds.has(node.id)}" tabindex="-1" style="left:${node.x}px;top:${node.y}px;width:${node.width}px"><button class="input-port" type="button" aria-label="参考图输入端口"></button><header class="node-header"><div class="generation-heading"><span>生成</span><small>${inputMeta}</small><em class="dirty-flag" data-dirty-flag title="已修改，待重新生成；当前图片会保留。" ${node.dirty ? '' : 'hidden'}>待重新生成</em></div><div class="node-header-actions"><button type="button" data-toggle-generation aria-label="${expanded ? '收起为结果简洁态' : '展开编辑参数'}" title="${expanded ? '收起为结果简洁态' : '展开编辑参数'}" aria-expanded="${expanded}">${icons.chevron}</button><span class="request-action-divider" aria-hidden="true"></span><button type="button" class="request-remove" data-delete-node aria-label="从画布移除" title="从画布移除">${icons.remove}</button></div></header><div class="generation-body"><div class="generation-media">${media}${batchProgressMarkup(node)}${generationErrorMarkup(node, batch)}</div>${expanded ? generationEditorMarkup(node) : ''}</div>${generationRailMarkup(node)}</article>`;
+    const title = node.agentSpec ? 'Agent 生图器' : '生成';
+    const classes = ['canvas-node', 'generation-node', node.agentSpec ? 'agent-node' : '', expanded ? 'expanded' : '', batch ? 'has-results' : '', node.promptSourceId ? 'prompt-linked' : '', state.selectedIds.has(node.id) ? 'selected' : '', node.dirty ? 'dirty' : ''].filter(Boolean).join(' ');
+    return `<article class="${classes}" data-node-id="${node.id}" data-node-type="${core.GENERATION}" aria-selected="${state.selectedIds.has(node.id)}" tabindex="-1" style="left:${node.x}px;top:${node.y}px;width:${node.width}px"><button class="input-port" type="button" aria-label="参考图输入端口"></button><header class="node-header"><div class="generation-heading"><span>${title}</span><small>${inputMeta}</small><em class="dirty-flag" data-dirty-flag title="已修改，待重新生成；当前图片会保留。" ${node.dirty ? '' : 'hidden'}>待重新生成</em></div><div class="node-header-actions"><button type="button" data-toggle-generation aria-label="${expanded ? '收起为结果简洁态' : '展开编辑参数'}" title="${expanded ? '收起为结果简洁态' : '展开编辑参数'}" aria-expanded="${expanded}">${icons.chevron}</button><span class="request-action-divider" aria-hidden="true"></span><button type="button" class="request-remove" data-delete-node aria-label="从画布移除" title="从画布移除">${icons.remove}</button></div></header><div class="generation-body"><div class="generation-media">${media}${batchProgressMarkup(node)}${generationErrorMarkup(node, batch)}</div>${promptOptimizeMarkup(node)}${expanded ? generationEditorMarkup(node) : ''}</div>${generationRailMarkup(node)}<button class="resize-handle" type="button" aria-label="拖动调整卡片宽度" title="拖动调整卡片宽度"></button></article>`;
   }
   function imageMarkup(node) {
     const needsReselect = node.needsReselect || (node.localOnly && !localFiles.has(node.id));
+    const assetExpired = node.assetExpired && !needsReselect;
     const available = node.src || '';
-    const media = needsReselect ? '<div class="result-state upload-missing"><strong>需要重新选择图片</strong><small>刷新后需重新授权本地文件</small><button type="button" data-reselect-image>重新选择图片</button></div>' : `<img src="${escapeHtml(available)}" alt="${escapeHtml(node.name || '参考图片')}">`;
+    const uploading = node.uploading ? '<div class="image-uploading" aria-hidden="true"><span class="spinner"></span></div>' : '';
+    const media = needsReselect || assetExpired
+      ? `<div class="result-state upload-missing"><strong>${assetExpired ? '素材已过期' : '需要重新选择图片'}</strong><small>${assetExpired ? '服务器素材已清理，请重新上传' : '刷新后需重新授权本地文件'}</small><button type="button" data-reselect-image>重新选择图片</button></div>`
+      : `<img src="${escapeHtml(available)}" alt="${escapeHtml(node.name || '参考图片')}">`;
     const dimensions = node.naturalWidth && node.naturalHeight ? ` · ${node.naturalWidth} × ${node.naturalHeight}` : '';
     const label = `${node.name || '参考图片'}${dimensions}`;
-    const openAction = available && !needsReselect ? `<button type="button" data-open-image aria-label="打开原图" title="打开原图">${icons.open}</button>` : '';
-    return `<article class="canvas-node image-node${state.selectedIds.has(node.id) ? ' selected' : ''}" data-node-id="${node.id}" data-node-type="${core.IMAGE}" aria-selected="${state.selectedIds.has(node.id)}" tabindex="-1" style="left:${node.x}px;top:${node.y}px;width:${node.width}px"><div class="image-frame" style="aspect-ratio:${node.aspect || '4/3'}">${media}</div><footer class="image-node-bar"><span title="${escapeHtml(label)}">${escapeHtml(label)}</span><div class="node-action-rail"><div class="file-actions">${openAction}</div><div class="remove-actions"><button type="button" data-delete-node aria-label="从画布移除" title="从画布移除">${icons.remove}</button></div></div></footer><button class="output-port" type="button" aria-label="从这张图片创建连接"></button></article>`;
+    const openAction = available && !needsReselect && !node.uploading ? `<button type="button" data-open-image aria-label="打开原图" title="打开原图">${icons.open}</button>` : '';
+    return `<article class="canvas-node image-node${node.uploading ? ' uploading' : ''}${state.selectedIds.has(node.id) ? ' selected' : ''}" data-node-id="${node.id}" data-node-type="${core.IMAGE}" aria-selected="${state.selectedIds.has(node.id)}" tabindex="-1" style="left:${node.x}px;top:${node.y}px;width:${node.width}px"><div class="image-frame" style="aspect-ratio:${node.aspect || '4/3'}">${media}${uploading}</div><footer class="image-node-bar"><span title="${escapeHtml(label)}">${escapeHtml(label)}</span><div class="node-action-rail"><div class="file-actions">${openAction}</div><div class="remove-actions"><button type="button" data-delete-node aria-label="从画布移除" title="从画布移除">${icons.remove}</button></div></div></footer><button class="output-port" type="button" aria-label="从这张图片创建连接"></button></article>`;
+  }
+
+  /* 文本节点：一张可编辑的文本卡。它不生成图片，只承载文字 ——
+     可以直接手写，也可以在接了图片后点「反推提示词」把那张图反推成一句英文提示词。 */
+  function textMarkup(node) {
+    const selected = state.selectedIds.has(node.id);
+    const inputs = (node.orderedInputIds || []).length;
+    const canReverse = inputs > 0;
+    const chars = (node.text || '').length;
+    // 有几张生图卡正拿它当提示词来源 —— 直接写在标题里，连线看不见数据也能看见关系。
+    const consumers = state.nodes.filter(item => item.promptSourceId === node.id).length;
+    const meta = consumers ? `供 ${consumers} 张生图卡使用` : (inputs ? `${inputs} 张图片输入` : '可直接写提示词');
+    // 反推的原料就摆在框上面：看得见接的是哪张图，也能直接摘掉。
+    const rows = inputRowsMarkup(node);
+    const classes = ['canvas-node', 'text-node', selected ? 'selected' : ''].filter(Boolean).join(' ');
+    const reverseTitle = canReverse ? '把接入的图片反推成一句英文提示词' : '先接一张图片才能反推';
+    return `<article class="${classes}" data-node-id="${node.id}" data-node-type="${core.TEXT_NODE}" aria-selected="${selected}" tabindex="-1" style="left:${node.x}px;top:${node.y}px;width:${node.width}px">`
+      + `<button class="input-port" type="button" aria-label="图片输入端口"></button>`
+      + `<header class="node-header"><div class="generation-heading"><span>文本</span><small title="${escapeHtml(meta)}">${escapeHtml(meta)}</small></div>`
+      + `<div class="node-header-actions"><button type="button" data-duplicate-text aria-label="复制一份文本节点" title="复制一份文本节点">${icons.duplicate}</button>`
+      + `<span class="request-action-divider" aria-hidden="true"></span>`
+      + `<button type="button" class="request-remove" data-delete-node aria-label="从画布移除" title="从画布移除">${icons.remove}</button></div></header>`
+      + `<div class="text-node-body">${rows ? `<ol class="request-inputs">${rows}</ol>` : ''}<textarea data-field="text" maxlength="12000" placeholder="写提示词；接一张图片后点下面的「反推提示词」">${escapeHtml(node.text || '')}</textarea></div>`
+      + `<footer class="generation-rail text-node-rail"><span class="rail-meta" data-text-count>${chars} 字</span>`
+      + `<div class="node-action-rail"><button type="button" class="reverse-prompt" data-reverse-prompt ${canReverse ? '' : 'disabled'} `
+      + `title="${reverseTitle}">反推提示词</button></div></footer>`
+      + `<button class="output-port" type="button" aria-label="从这个文本节点创建连接"></button>`
+      + `<button class="resize-handle" type="button" aria-label="拖动调整卡片宽度" title="拖动调整卡片宽度"></button></article>`;
+  }
+
+  function nodeMarkup(node) {
+    if (core.isGenerationNode(node)) return generationMarkup(node);
+    if (core.isTextNode(node)) return textMarkup(node);
+    return imageMarkup(node);
+  }
+
+  /* 「Agent 生图器」/普通生图器之间的转换：**同一张卡**，只是补上或去掉结构化轴。
+     保留提示词、参考图与已有结果 —— 转换不该毁掉用户已经连线/写好的东西。
+     ⚠️ 比例/分辨率在 agent 模式下由服务端按平台规范推导，所以转换时把它们复位成
+     能力面默认值，避免把一个"看着还在、其实不会被用"的旧值留在卡上。 */
+  function convertToAgentNode(node) {
+    if (!core.isGenerationNode(node) || node.agentSpec) return;
+    node.agentSpec = agentDefaults();
+    const profile = profileById(node.profileId);
+    if (!profile || profile.provider !== 'api') {
+      const apiProfileId = defaultAgentProfileId();
+      if (apiProfileId) {
+        const apiProfile = profileById(apiProfileId);
+        node.profileId = apiProfile.id; node.provider = apiProfile.provider;
+        const first = combos(apiProfile)[0];
+        node.ratio = first?.ratio || node.ratio; node.resolution = first?.resolution || node.resolution;
+        node.quality = apiProfile.qualities?.includes(node.quality) ? node.quality : (apiProfile.qualities?.[0] || 'standard');
+      }
+    }
+    node.width = Math.max(Number(node.width) || 0, core.AGENT_DEFAULT_WIDTH);
+    node.expanded = true; node.expandedPinned = true;
+    syncDirty(node); render(); scheduleLinks(); scheduleSave();
+    toast(agentConfig.plan_available === false
+      ? '已转为 Agent 生图器；服务端还没配置提示词计划 skill，配好后按钮就能用'
+      : '已转为 Agent 生图器');
+  }
+  function convertToPlainNode(node) {
+    if (!core.isGenerationNode(node) || !node.agentSpec) return;
+    node.agentSpec = null; node.agentRoles = {};
+    node.width = core.DEFAULT_WIDTH;
+    syncDirty(node); render(); scheduleLinks(); scheduleSave();
+    toast('已转回普通生图器');
+  }
+  function addTextNode(x, y) {
+    const node = core.normalizeTextNode({
+      id: uid('text'), type: core.TEXT_NODE, x, y, width: core.DEFAULT_WIDTH,
+      text: '', orderedInputIds: [],
+    });
+    state.nodes.push(node);
+    selectNode(node.id);
+    render(); scheduleSave();
+    requestAnimationFrame(() => $(`[data-node-id="${node.id}"] textarea`)?.focus());
+  }
+
+  /* 「Agent 生图器」：和生图器同一张卡，但带结构化轴（平台/市场/类目/工作类型/卖点）。
+     ⚠️ 只用 API 渠道的模型 —— 服务端也按这条校验（agent 节点不支持平台渠道）。 */
+  function agentDefaults() {
+    const defaults = agentConfig.defaults || {};
+    return {
+      platform: defaults.platform || '',
+      market: defaults.market || '',
+      category: defaults.category || '',
+      work_type: defaults.work_type || '',
+      selling_point: defaults.selling_point || '',
+      selling_point_text: '',
+    };
+  }
+  function defaultAgentProfileId() {
+    const api = (models || []).find(item => item.provider === 'api' && item.enabled);
+    return api ? api.id : '';
+  }
+  function addAgentNode(x, y) {
+    const node = defaultGeneration(x, y, {profileId: defaultAgentProfileId()});
+    node.agentSpec = agentDefaults();
+    node.width = core.AGENT_DEFAULT_WIDTH;
+    state.nodes.push(node);
+    selectNode(node.id, false, false);
+    render(); scheduleLayoutRecompute(); scheduleSave();
+    requestAnimationFrame(() => $(`[data-node-id="${node.id}"] textarea`)?.focus());
+    /* 卡片照建（用户要的是"用得上"），但把"为什么按钮是灰的"当场说清楚，
+       否则他会以为是卡片没做出来。 */
+    if (agentConfig.plan_available === false) {
+      toast('Agent 生图器已创建；服务端还没配置提示词计划 skill，配好后按钮就能用', true);
+    } else if (!defaultAgentProfileId()) {
+      toast('Agent 生图器已创建；还没有启用的 API 渠道模型，先配一个再提交', true);
+    }
+    return node;
+  }
+
+  function duplicateTextNode(node) {
+    const clone = core.normalizeTextNode({
+      ...node, id: uid('text'), x: node.x + 36, y: node.y + 36,
+      orderedInputIds: [...(node.orderedInputIds || [])],
+    });
+    state.nodes.push(clone);
+    selectNode(clone.id);
+    render(); scheduleSave();
+    toast('已复制一份文本节点');
+  }
+
+  /* 反推提示词：把接进来的那张图交给视觉模型，回一句英文提示词填进文本节点。
+     ⭐ 计费是「先服务后收钱」—— 失败时服务端不扣费，这里也就只报个错。 */
+  async function reversePrompt(node) {
+    const refs = node.orderedInputIds || [];
+    if (!refs.length) { toast('先接一张图片才能反推', true); return; }
+    const button = $(`[data-node-id="${node.id}"] [data-reverse-prompt]`);
+    if (button) button.disabled = true;
+    try {
+      const resolved = await sourceFile(refs[0]);
+      const data = new FormData();
+      if (resolved.kind === 'asset') data.append('asset_id', resolved.id);
+      else data.append('file', resolved.file);
+      const response = await fetch('/api/prompt-reverse', {
+        method: 'POST', headers: {...csrfHeaders}, body: data,
+      });
+      const payload = await response.json().catch(() => ({}));
+      if (!response.ok) { toast(payload.detail || '反推失败', true); return; }
+      node.text = payload.prompt || '';
+      syncLinkedPrompts(node);
+      render(); scheduleSave();
+      toast('已反推提示词');
+    } catch (error) {
+      toast(String(error?.message || error), true);
+    } finally {
+      if (button) button.disabled = false;
+    }
   }
 
   function curvePath(a, b) { const bend = Math.max(70, Math.abs(b.x - a.x) * .45); return `M ${a.x} ${a.y} C ${a.x + bend} ${a.y}, ${b.x - bend} ${b.y}, ${b.x} ${b.y}`; }
@@ -408,30 +775,38 @@
   function renderLinksNow() {
     const lines = [];
     const selected = key => state.selectedLinks.has(key) ? ' selected' : '';
-    generationNodes().forEach(node => (node.orderedInputIds || []).forEach((ref, index) => {
+    const viewport = $('#canvas-viewport');
+    const push = (sourceElement, targetElement, ref, targetId, index, extraClass = '') => {
+      if (!sourceElement || !targetElement || !viewport) return;
+      const rect = viewport.getBoundingClientRect();
+      const a = core.rectCenterToWorld(sourceElement.getBoundingClientRect(), rect, state.viewport);
+      const b = core.rectCenterToWorld(targetElement.getBoundingClientRect(), rect, state.viewport);
+      const path = curvePath(a, b);
+      const key = linkKey(ref, targetId);
+      const meta = `data-source="${escapeHtml(ref)}" data-target="${targetId}" data-order="${index + 1}"`;
+      lines.push(`<path class="input-link${extraClass}${selected(key)}" ${meta} data-start-x="${a.x}" data-start-y="${a.y}" data-end-x="${b.x}" data-end-y="${b.y}" d="${path}"/>`);
+      lines.push(`<path class="link-hit${extraClass}${selected(key)}" ${meta} d="${path}"/>`);
+    };
+    inputNodes().forEach(node => (node.orderedInputIds || []).forEach((ref, index) => {
       const parsed = core.parseResultRefId(ref);
       const sourceElement = parsed
         ? $(`[data-node-id="${parsed.nodeId}"] [data-result-id="${parsed.resultId}"] .tile-port`)
         : $(`[data-node-id="${ref}"] .output-port`);
-      const target = $(`[data-node-id="${node.id}"] .input-port`);
-      const viewport = $('#canvas-viewport');
-      if (!sourceElement || !target || !viewport) return;
-      const rect = viewport.getBoundingClientRect();
-      const a = core.rectCenterToWorld(sourceElement.getBoundingClientRect(), rect, state.viewport);
-      const b = core.rectCenterToWorld(target.getBoundingClientRect(), rect, state.viewport);
-      const path = curvePath(a, b);
-      const key = linkKey(ref, node.id);
-      const meta = `data-source="${escapeHtml(ref)}" data-target="${node.id}" data-order="${index + 1}"`;
-      lines.push(`<path class="input-link${selected(key)}" ${meta} data-start-x="${a.x}" data-start-y="${a.y}" data-end-x="${b.x}" data-end-y="${b.y}" d="${path}"/>`);
-      lines.push(`<path class="link-hit${selected(key)}" ${meta} d="${path}"/>`);
+      push(sourceElement, $(`[data-node-id="${node.id}"] .input-port`), ref, node.id, index);
     }));
+    /* 提示词连线：文本卡的输出端口 → 生图卡的输入端口。和参考图同一根线走同一套
+       命中/选中逻辑，只多一个类名画成虚线，一眼能分出「这是提示词，不是参考图」。 */
+    state.nodes.forEach(node => {
+      const source = core.promptSourceNode(state.nodes, node);
+      if (source) push($(`[data-node-id="${source.id}"] .output-port`), $(`[data-node-id="${node.id}"] .input-port`), source.id, node.id, 0, ' prompt-link');
+    });
     if (state.connecting) lines.push(`<path class="temporary-link" d="${curvePath(state.connecting.start, state.connecting.current)}"/>`);
     $('#canvas-links').innerHTML = lines.join(''); updateMinimap();
   }
   function scheduleLinks() { cancelAnimationFrame(linkFrame); linkFrame = requestAnimationFrame(renderLinksNow); }
   function applyViewport() { $('#canvas-world').style.transform = `translate(${state.viewport.x}px,${state.viewport.y}px) scale(${state.viewport.zoom})`; $('#zoom-reset').textContent = `${Math.round(state.viewport.zoom * 100)}%`; scheduleLinks(); }
   function observeLayout() { resizeObserver?.disconnect(); resizeObserver = new ResizeObserver(() => scheduleLinks()); $$('.canvas-node').forEach(el => resizeObserver.observe(el)); }
-  function render() { cancelAnimationFrame(renderFrame); $('#canvas-nodes').innerHTML = state.nodes.map(node => core.isGenerationNode(node) ? generationMarkup(node) : imageMarkup(node)).join(''); $('#canvas-empty').hidden = state.nodes.length > 0; applyViewport(); renderFrame = requestAnimationFrame(() => { observeLayout(); scheduleLinks(); }); }
+  function render() { cancelAnimationFrame(renderFrame); $('#canvas-nodes').innerHTML = state.nodes.map(nodeMarkup).join(''); $('#canvas-empty').hidden = state.nodes.length > 0; applyViewport(); renderFrame = requestAnimationFrame(() => { observeLayout(); scheduleLinks(); }); }
   function scheduleLayoutRecompute() { requestAnimationFrame(() => requestAnimationFrame(() => { scheduleLinks(); updateMinimap(); })); }
   /* The header chevron is the only control that returns a card to the collapsed
      result summary, so it also owns the expand pin. */
@@ -483,36 +858,81 @@
       const id = uid('image'); const src = URL.createObjectURL(file);
       try {
         const size = await imageSize(src); const index = imported;
-        state.nodes.push({id, type: core.IMAGE, x: point.x + index * imageOffset, y: point.y + index * imageOffset, width: 280, aspect: `${size.w}/${size.h}`, naturalWidth: size.w, naturalHeight: size.h, src, name: file.name || '粘贴的图片', localOnly: true, needsReselect: false});
+        /* Render immediately from the blob so the node appears without waiting
+           for the upload. The upload to /api/assets then swaps in the persistent
+           server URL, so the image survives project switches and page reloads. */
+        const node = {id, type: core.IMAGE, x: point.x + index * imageOffset, y: point.y + index * imageOffset, width: 280, aspect: `${size.w}/${size.h}`, naturalWidth: size.w, naturalHeight: size.h, src, name: file.name || '粘贴的图片', localOnly: true, needsReselect: false, uploading: true};
+        state.nodes.push(node);
         localFiles.set(id, file); objectUrls.set(id, src); imported += 1;
+        render(); scheduleSave();
+        uploadImageToAsset(node, file);
       } catch (error) { URL.revokeObjectURL(src); toast(error.message, true); }
     }
-    if (imported) { render(); scheduleSave(); }
     if (oversized) toast('单张图片不能超过 30 MB', true);
     else if (unsupported) toast('仅支持 PNG、JPEG 和 WebP 图片', true);
     return imported;
   }
+  function uploadImageToAsset(node, file) {
+    const form = new FormData();
+    form.append('file', file);
+    fetch('/api/assets', {method: 'POST', headers: csrfHeaders, body: form})
+      .then(responseJson)
+      .then(payload => {
+        const asset = payload.asset;
+        node.assetId = asset.id;
+        node.src = asset.url;
+        node.localOnly = false;
+        node.needsReselect = false;
+        node.assetExpired = false;
+        if (objectUrls.has(node.id)) { URL.revokeObjectURL(objectUrls.get(node.id)); objectUrls.delete(node.id); }
+        localFiles.delete(node.id);
+        node.uploading = false;
+        render(); scheduleSave();
+      })
+      .catch(error => {
+        /* Upload failed: fall back to the original localOnly behaviour so the
+           user keeps seeing the image instead of losing it. */
+        node.uploading = false;
+        render();
+        toast(`图片「${file.name || '未命名'}」上传到素材库失败，已保留在本地：${error.message}`, true);
+      });
+  }
   function reselectImage(node) { const input = document.createElement('input'); input.type = 'file'; input.accept = 'image/png,image/jpeg,image/webp'; input.addEventListener('change', async () => { const file = input.files?.[0]; if (!file) return; if (!acceptedImageTypes.has(file.type.toLowerCase())) { toast('仅支持 PNG、JPEG 和 WebP 图片', true); return; } if (file.size > maxLocalImageBytes) { toast('单张图片不能超过 30 MB', true); return; } const src = URL.createObjectURL(file); try { const size = await imageSize(src); if (objectUrls.has(node.id)) URL.revokeObjectURL(objectUrls.get(node.id)); localFiles.set(node.id, file); objectUrls.set(node.id, src); Object.assign(node, {src, name: file.name, aspect: `${size.w}/${size.h}`, naturalWidth: size.w, naturalHeight: size.h, localOnly: true, needsReselect: false}); render(); scheduleSave(); } catch (error) { URL.revokeObjectURL(src); toast(error.message, true); } }, {once: true}); input.click(); }
 
   function syncDraggingClass() { $('#canvas-viewport')?.classList.toggle('dragging', Boolean(drag || pan || state.connecting)); }
-  function cancelConnection() { if (!state.connecting) return false; state.connecting = null; $('.canvas-shell')?.classList.remove('connecting'); $$('.generation-node.drop-target').forEach(node => node.classList.remove('drop-target')); syncDraggingClass(); scheduleLinks(); return true; }
+  function cancelConnection() { if (!state.connecting) return false; state.connecting = null; $('.canvas-shell')?.classList.remove('connecting'); $$('.canvas-node.drop-target').forEach(node => node.classList.remove('drop-target')); syncDraggingClass(); scheduleLinks(); return true; }
   function beginConnection(event, node, ref, portSelector) {
     event.preventDefault(); event.stopPropagation();
     const start = portWorld(node.id, portSelector); if (!start) return;
     state.connecting = {sourceId: ref, sourceNodeId: node.id, pointerId: event.pointerId, start, current: start};
     $('.canvas-shell')?.classList.add('connecting'); syncDraggingClass(); event.currentTarget.setPointerCapture?.(event.pointerId); scheduleLinks();
   }
+  /* 落点决定含义：接到生图卡上，来源是文本卡就是提示词来源，否则是参考图；
+     接到文本卡上永远是一张参考图（反推提示词的原料）。 */
+  function connectTo(target, sourceId) {
+    const sourceNode = nodeById(sourceId);
+    if (core.isTextNode(sourceNode) && core.isGenerationNode(target)) return linkPromptSource(target, sourceNode);
+    return addInput(target.id, sourceId);
+  }
   function finishConnection(event) {
     if (!state.connecting || event.pointerId !== state.connecting.pointerId) return;
     const connection = state.connecting; state.connecting = null; $('.canvas-shell')?.classList.remove('connecting'); syncDraggingClass();
-    const target = document.elementFromPoint(event.clientX, event.clientY)?.closest('.generation-node');
-    if (target) { addInput(target.dataset.nodeId, connection.sourceId); return; }
-    const invalid = document.elementFromPoint(event.clientX, event.clientY)?.closest('.canvas-node,.canvas-toolbar,.workspace-bar');
-    const viewport = document.elementFromPoint(event.clientX, event.clientY)?.closest('#canvas-viewport');
+    const dropped = document.elementFromPoint(event.clientX, event.clientY);
+    const host = dropped?.closest('.canvas-node');
+    const target = host && nodeById(host.dataset.nodeId);
+    if (target && core.canLink(state.nodes, target, connection.sourceId)) { connectTo(target, connection.sourceId); return; }
+    const invalid = dropped?.closest('.canvas-node,.canvas-toolbar,.workspace-bar');
+    const viewport = dropped?.closest('#canvas-viewport');
     if (!viewport || invalid) { scheduleLinks(); return; }
     const source = core.resolveInputRef(state.nodes, connection.sourceId);
-    if (!source) { scheduleLinks(); return; }
+    const textSource = nodeById(connection.sourceId);
     const point = worldPoint(event.clientX, event.clientY);
+    /* 从文本卡拖到空白处 = 新建一张由它供词的生图卡，和从图片拖出去对称。 */
+    if (!source && core.isTextNode(textSource)) {
+      linkPromptSource(addGeneration(point.x, point.y, {}), textSource);
+      return;
+    }
+    if (!source) { scheduleLinks(); return; }
     const parameters = source.kind === 'result' ? source.result.parameters || {} : {};
     addGeneration(point.x, point.y, {
       orderedInputIds: [connection.sourceId],
@@ -536,8 +956,34 @@
     const origins = [...state.selectedIds].map(id => { const item = nodeById(id); return item && {id, x: item.x, y: item.y}; }).filter(Boolean);
     drag = {pointerId: event.pointerId, startX: event.clientX, startY: event.clientY, origins, moved: false, captured: false}; origins.forEach(item => $(`[data-node-id="${item.id}"]`)?.classList.add('dragging')); syncDraggingClass();
   }
+  /* 拉宽卡片：只改宽度，高度始终由内容决定，所以卡片不会被拉变形。 */
+  function startResize(event, handle, node) {
+    if (event.button !== 0) return;
+    event.preventDefault(); event.stopPropagation();
+    resizing = {pointerId: event.pointerId, nodeId: node.id, startX: event.clientX, width: node.width};
+    // 捕获在**手柄**而不是 viewport 上：后续 pointermove 才会一直送到这里。
+    handle.setPointerCapture?.(event.pointerId);
+    $('.canvas-shell')?.classList.add('resizing');
+  }
   function movePointer(event) {
-    if (state.connecting && event.pointerId === state.connecting.pointerId) { state.connecting.current = worldPoint(event.clientX, event.clientY); $$('.generation-node.drop-target').forEach(node => node.classList.remove('drop-target')); document.elementFromPoint(event.clientX, event.clientY)?.closest('.generation-node')?.classList.add('drop-target'); scheduleLinks(); return; }
+    if (state.connecting && event.pointerId === state.connecting.pointerId) {
+      state.connecting.current = worldPoint(event.clientX, event.clientY);
+      $$('.canvas-node.drop-target').forEach(node => node.classList.remove('drop-target'));
+      /* 只有「接得住」的卡片才亮起来：文本卡不能接到另一张文本卡上。 */
+      const host = document.elementFromPoint(event.clientX, event.clientY)?.closest('.canvas-node');
+      const target = host && nodeById(host.dataset.nodeId);
+      if (target && core.canLink(state.nodes, target, state.connecting.sourceId)) host.classList.add('drop-target');
+      scheduleLinks(); return;
+    }
+    if (resizing && event.pointerId === resizing.pointerId) {
+      const node = nodeById(resizing.nodeId);
+      if (!node) return;
+      node.width = core.clampWidth(resizing.width + (event.clientX - resizing.startX) / state.viewport.zoom);
+      const el = $(`[data-node-id="${node.id}"]`);
+      if (el) el.style.width = `${node.width}px`;
+      scheduleLinks();
+      return;
+    }
     if (drag && event.pointerId === drag.pointerId) {
       const dx = (event.clientX - drag.startX) / state.viewport.zoom; const dy = (event.clientY - drag.startY) / state.viewport.zoom;
       if (Math.hypot(dx, dy) > 2) {
@@ -552,6 +998,7 @@
     let changed = false;
     if (drag && (pointerId == null || drag.pointerId === pointerId)) { drag.origins.forEach(item => $(`[data-node-id="${item.id}"]`)?.classList.remove('dragging')); drag = null; changed = true; }
     if (pan && (pointerId == null || pan.pointerId === pointerId)) { pan = null; changed = true; }
+    if (resizing && (pointerId == null || resizing.pointerId === pointerId)) { resizing = null; $('.canvas-shell')?.classList.remove('resizing'); changed = true; }
     syncDraggingClass();
     return changed;
   }
@@ -559,15 +1006,24 @@
     if (state.connecting) finishConnection(event);
     if (drag && event.pointerId === drag.pointerId) { suppressClick = drag.moved; clearPointerInteraction(event.pointerId); scheduleSave(); }
     if (pan && event.pointerId === pan.pointerId) { if (!pan.moved) clearSelection(); suppressClick = pan.moved; clearPointerInteraction(event.pointerId); scheduleSave(); }
+    /* 拉宽结束：宽度已经写在节点上，落一次盘把新宽度留住。松手后的 click
+       会被 suppressClick 吃掉，免得顺手把卡片选中/展开。 */
+    if (resizing && event.pointerId === resizing.pointerId) { suppressClick = true; clearPointerInteraction(event.pointerId); scheduleSave(); }
     syncDraggingClass();
   }
-  function reorderInput(nodeId, ref, beforeRef) { const node = nodeById(nodeId); if (!core.isGenerationNode(node)) return; const list = node.orderedInputIds.filter(item => item !== ref); const target = list.indexOf(beforeRef); list.splice(target < 0 ? list.length : target, 0, ref); node.orderedInputIds = list; syncDirty(node); render(); scheduleSave(); }
+  /* 文本卡与生图卡的输入都是同一个有序列表（缩略图拖拽换位），所以两者都允许。 */
+  function reorderInput(nodeId, ref, beforeRef) { const node = nodeById(nodeId); if (!core.isGenerationNode(node) && !core.isTextNode(node)) return; const list = node.orderedInputIds.filter(item => item !== ref); const target = list.indexOf(beforeRef); list.splice(target < 0 ? list.length : target, 0, ref); node.orderedInputIds = list; syncDirty(node); render(); scheduleSave(); }
 
   async function sourceFile(ref) {
     const source = core.resolveInputRef(state.nodes, ref);
     if (!source) throw new Error('参考图不可用，请重新选择');
     if (source.kind === 'image') {
-      if (localFiles.has(ref)) return localFiles.get(ref);
+      /* Still uploading (or upload failed): the in-memory file is still the
+         source of truth, so submit it as a normal file reference. */
+      if (localFiles.has(ref)) return {kind: 'file', file: localFiles.get(ref)};
+      /* Persisted to the asset library: submit by reference, the server reuses
+         the bytes instead of making the client re-upload them. */
+      if (source.node && source.node.assetId) return {kind: 'asset', id: source.node.assetId};
       if (source.localOnly) throw new Error('本地参考图需要重新选择后才能生成');
       throw new Error('参考图不可用，请重新选择');
     }
@@ -575,8 +1031,10 @@
     if (!response.ok) throw new Error('无法读取历史结果原图');
     const blob = await response.blob();
     const extension = blob.type.includes('png') ? 'png' : blob.type.includes('webp') ? 'webp' : 'jpg';
-    return new File([blob], `generation-${source.generationId || source.result.id}.${extension}`, {type: blob.type});
+    return {kind: 'file', file: new File([blob], `generation-${source.generationId || source.result.id}.${extension}`, {type: blob.type})};
   }
+  /* 旧的「三态优化开关」已从 UI 移除：后端把提示词优化改成用户主动触发的
+     /api/prompt-optimize 同步调用，提交生成时不再发送 optimize_prompt / prompt_optimize_mode。 */
   async function submitOne(request, result, parentGenerationId) {
     const data = new FormData();
     data.append('prompt', request.prompt.trim());
@@ -586,7 +1044,29 @@
     data.append('quality', request.quality || 'standard');
     data.append('parent_generation_id', parentGenerationId || '');
     data.append('idempotency_key', uid('generation').replace(/-/g, '').slice(0, 64));
-    for (const ref of request.orderedInputIds || []) data.append('references', await sourceFile(ref));
+    /* Build reference_order in node order. Asset references are sent as
+       `a:<id>` with no file; local/result files are appended and referenced as
+       `f:<index>` into the multipart `references` list. */
+    const order = [];
+    const files = [];
+    for (const ref of request.orderedInputIds || []) {
+      const resolved = await sourceFile(ref);
+      if (resolved.kind === 'asset') {
+        order.push(`a:${resolved.id}`);
+        continue;
+      }
+      /* The token must be pushed **in place**, remembering this file's index in
+         the multipart list. Collecting the file tokens and appending them after
+         the loop would move every asset reference to the front of the list —
+         silently reordering the references the prompt was built around. */
+      files.push(resolved.file);
+      order.push(`f:${files.length - 1}`);
+    }
+    files.forEach(file => { data.append('references', file); });
+    if (order.length) data.append('reference_order', JSON.stringify(order));
+    /* Agent 生图器：带上结构化轴。服务端据此按平台规范推导比例、并在执行时组装
+       类目×工作类型的知识约束（这就是「agent 节点」的入口）。 */
+    if (request.agentSpec) data.append('agent_spec', JSON.stringify(request.agentSpec));
     const payload = await responseJson(await fetch(`/api/projects/${projectId}/generations`, {method: 'POST', headers: csrfHeaders, body: data}));
     result.generationId = payload.id;
     result.status = payload.status || 'queued';
@@ -598,6 +1078,14 @@
   }
   /* One immutable Generation per result; the node keeps its previous batch
      visible until the new attempt settles, then swaps its active batch. */
+  /* ⚠️ 「还在等上游」不是失败：只有**真的 failed** 的结果才配得到那句兜底错误文案，
+     否则一个 recovery_required 且无错误信息的任务会被这里染成红卡
+     （用户实测反馈：前端直接把等待渲染成报错）。 */
+  function batchFailureText(results) {
+    const explicit = results.map(result => result.error).find(Boolean);
+    if (explicit) return explicit;
+    return results.some(result => result.status === 'failed') ? '生成失败，可安全重试' : '';
+  }
   function settleAttempt(node) {
     const attempt = node.attempt;
     if (!attempt || attempt.settled) return false;
@@ -609,7 +1097,7 @@
     if (anySucceeded || !previous.length) {
       node.activeBatch = {id: attempt.id, createdAt: attempt.createdAt, parentGenerationId: attempt.parentGenerationId, request: attempt.request, results};
       node.attempt = null;
-      node.error = anySucceeded ? '' : (results.map(result => result.error).find(Boolean) || '生成失败，可安全重试');
+      node.error = anySucceeded ? '' : batchFailureText(results);
       node.primaryResultId = anySucceeded ? (results.find(result => result.status === 'succeeded')?.id || '') : '';
       node.dirty = core.isDirty(node);
       /* Only a freshly submitted generation may return the card to its result
@@ -620,7 +1108,7 @@
       return true;
     }
     attempt.promoted = false;
-    node.error = results.map(result => result.error).find(Boolean) || '生成失败，可安全重试';
+    node.error = batchFailureText(results);
     node.dirty = core.isDirty(node);
     return true;
   }
@@ -652,6 +1140,11 @@
     const profile = profileById(node.profileId); if (!profile?.enabled) { toast('当前模型不可用，请选择已启用模型', true); return; }
     const missing = core.firstMissingLocalInput(state.nodes, node, id => localFiles.has(id)); if (missing) { selectNode(missing.id); toast('本地参考图需要重新选择后才能生成', true); return; }
     const request = core.requestSnapshot(node);
+    /* Agent 生图器：把逐张职责按输入顺序排成 reference_roles（留空 = 空串，
+       由服务端/模型补），排在提交请求里一起走。 */
+    if (request.agentSpec) {
+      request.agentSpec.reference_roles = (node.orderedInputIds || []).map(ref => (node.agentRoles || {})[ref] || '');
+    }
     const count = core.clampCount(request.count);
     const parent = lineageParentId(node);
     const aspect = core.ratioToAspect(request.ratio);
@@ -679,7 +1172,7 @@
         if (!result.generationId) return;
         const item = byId.get(result.generationId); if (!item) return;
         const before = `${result.status}|${result.artifactUrl}|${result.sentiment}`;
-        Object.assign(result, {status: item.status, artifactUrl: item.artifact_url, error: item.error, canRetry: item.can_retry, sentiment: item.sentiment || '', provider: item.provider, modelLabel: item.model_label, prompt: item.prompt, parameters: item.parameters, profileId: item.profile_id || result.profileId, createdAt: item.created_at || result.createdAt});
+        Object.assign(result, {status: item.status, artifactUrl: item.artifact_url, error: item.error, canRetry: item.can_retry, sentiment: item.sentiment || '', provider: item.provider, modelLabel: item.model_label, prompt: item.prompt, optimized_prompt: item.optimized_prompt || '', effective_prompt: item.effective_prompt || '', prompt_optimize_state: item.prompt_optimize_state || 'none', prompt_optimize_error: item.prompt_optimize_error || '', parameters: item.parameters, profileId: item.profile_id || result.profileId, createdAt: item.created_at || result.createdAt});
         if (before !== `${result.status}|${result.artifactUrl}|${result.sentiment}`) { changed = true; emitResult(node, result); }
       });
       if (settleAttempt(node)) changed = true;
@@ -707,11 +1200,13 @@
   function importCanvas(payload) {
     state.viewport = {x: Number(payload.viewport?.x) || 0, y: Number(payload.viewport?.y) || 0, zoom: Number(payload.viewport?.zoom) || 1};
     state.selectedIds.clear(); state.selectedLinks.clear();
-    const known = [core.IMAGE, core.GENERATION, core.LEGACY_REQUEST, core.LEGACY_RESULT];
+    const known = [core.IMAGE, core.GENERATION, core.TEXT_NODE, core.LEGACY_REQUEST, core.LEGACY_RESULT];
     const loaded = (Array.isArray(payload.nodes) ? payload.nodes : []).filter(node => node && known.includes(node.type));
     const migrated = core.migrateCanvasNodes(loaded, splitOptions());
     state.nodes = core.restoreCanvasNodes(migrated.nodes);
     if (!state.nodes.length && payload.draft) { const draft = payload.draft; state.nodes.push(defaultGeneration(220, 160, {profileId: draft.profile, ratio: draft.ratio, resolution: draft.resolution, prompt: draft.prompt})); }
+    // 提示词镜像要对齐一次：文本卡可能是关页面前改的，来源也可能已经不在数据里了。
+    if (reconcilePromptSources()) migrated.migrated = true;
     return migrated.migrated;
   }
   function focusAndCenterNode(node) { const viewport = $('#canvas-viewport'); const rect = viewport.getBoundingClientRect(); const height = $(`[data-node-id="${node.id}"]`)?.getBoundingClientRect().height / state.viewport.zoom || 300; clearLinkSelection(); state.selectedIds = new Set([node.id]); state.viewport.x = rect.width / 2 - (node.x + node.width / 2) * state.viewport.zoom; state.viewport.y = rect.height / 2 - (node.y + height / 2) * state.viewport.zoom; render(); scheduleSave(); }
@@ -784,17 +1279,46 @@
     requestAnimationFrame(() => { input.focus(); input.select(); });
   }
   function closeRenameProjectDialog() { const dialog = $('#project-rename-dialog'); if (dialog.open) dialog.close(); }
+  function openDeleteProjectDialog(button) {
+    setProjectDrawer(false);
+    const dialog = $('#project-delete-dialog');
+    $('form', dialog).action = `/projects/${encodeURIComponent(button.dataset.deleteProjectId)}/delete`;
+    $('#project-delete-name', dialog).textContent = button.dataset.deleteProjectName || '';
+    dialog.showModal();
+    requestAnimationFrame(() => $('[data-close-delete]', dialog)?.focus());
+  }
+  function closeDeleteProjectDialog() { const dialog = $('#project-delete-dialog'); if (dialog.open) dialog.close(); }
   function clearRenameProjectDialog() { const dialog = $('#project-rename-dialog'); const form = $('form', dialog); const input = $('#project-rename-name', dialog); form.action = ''; input.value = ''; input.setCustomValidity(''); }
   function closeViewer() { const dialog = $('#image-viewer'); if (!dialog.open) return false; dialog.close(); const image = $('img', dialog); image.onload = null; image.removeAttribute('src'); image.removeAttribute('style'); $('.viewer-stage', dialog).classList.remove('can-pan', 'is-panning'); Object.assign(viewerState, {scale: 1, panX: 0, panY: 0, fit: true, pointerId: null}); const target = viewerState.invoker; viewerState.invoker = null; requestAnimationFrame(() => target?.isConnected && target.focus?.({preventScroll: true})); return true; }
   function closeShortcut() { $('#shortcut-popover').hidden = true; }
   function openShortcut() { closeContextMenu(); const pop = $('#shortcut-popover'); pop.hidden = false; $('[data-close-overlay]', pop).focus(); }
   function closeContextMenu(restore = false) { const menu = $('#context-menu'); if (menu.hidden) return false; menu.hidden = true; if (restore && context?.focusId) $(`[data-node-id="${context.focusId}"]`)?.focus(); context = null; return true; }
   function contextItems(node, link = null) {
-    if (link) return [{label: '移除连线', action: 'unlink'}];
-    if (!node) return [{label: '上传图片', action: 'upload'}, {label: '新建生图', action: 'request'}, {label: '粘贴', action: 'paste', disabled: !canvasClipboard}, {label: '适应内容', action: 'fit'}, {label: '快捷键', action: 'shortcuts'}];
+    if (link) {
+      const target = nodeById(link.target);
+      const isPrompt = core.isGenerationNode(target) && target.promptSourceId === link.source;
+      return [{label: isPrompt ? '断开提示词连线' : '移除连线', action: 'unlink'}];
+    }
+    if (!node) return [{label: '上传图片', action: 'upload'}, {label: '从素材库选择', action: 'library'}, {label: '新建生图', action: 'request'}, {label: '新建 Agent 生图器', action: 'agent'}, {label: '新建文本', action: 'text'}, {label: '粘贴', action: 'paste', disabled: !canvasClipboard}, {label: '适应内容', action: 'fit'}, {label: '快捷键', action: 'shortcuts'}];
     const common = [{label: '复制', action: 'copy'}, {label: '从画布移除', action: 'remove'}];
-    if (core.isGenerationNode(node)) return [...common, {label: node.expanded ? '收起为结果简洁态' : '展开编辑参数', action: 'toggle'}, {label: '从主图创建生图', action: 'derive', disabled: !primaryOf(node)?.artifactUrl}];
-    return [...common, {label: '打开大图', action: 'open', disabled: !node.src}, {label: '从此图创建生图', action: 'derive'}];
+    if (core.isTextNode(node)) {
+      const inputs = (node.orderedInputIds || []).length;
+      const consumers = state.nodes.filter(item => item.promptSourceId === node.id).length;
+      return [...common,
+        {label: '反推提示词', action: 'reverse', disabled: !inputs},
+        {label: `断开 ${consumers} 条提示词连线`, action: 'unlink-consumers', disabled: !consumers}];
+    }
+    if (core.isGenerationNode(node)) {
+      return [...common,
+        {label: node.expanded ? '收起为结果简洁态' : '展开编辑参数', action: 'toggle'},
+        /* 普通生图 → Agent 生图器：同一张卡，补上结构化轴。已是 agent 卡就不给这一项。 */
+        node.agentSpec
+          ? {label: '转为普通生图器', action: 'to-plain'}
+          : {label: '转为 Agent 生图器', action: 'to-agent'},
+        {label: '从主图创建生图', action: 'derive', disabled: !primaryOf(node)?.artifactUrl},
+        ...(node.promptSourceId ? [{label: '断开提示词连线', action: 'unlink-prompt'}] : [])];
+    }
+    return [...common, {label: '从素材库选择', action: 'library'}, {label: '打开大图', action: 'open', disabled: !node.src}, {label: '从此图创建生图', action: 'derive'}];
   }
   /* Right-clicking a connection selects it first, so the menu and the keyboard
      share one target. Right-clicking blank canvas or a node keeps the existing
@@ -829,7 +1353,10 @@
     const node = nodeById(context?.nodeId); const point = context?.point;
     if (action === 'unlink') removeLinks([...state.selectedLinks]);
     else if (action === 'upload') { pendingUploadPoint = point; $('#canvas-upload').click(); }
+    else if (action === 'library') openAssetPicker(point);
     else if (action === 'request') addGeneration(point.x, point.y);
+    else if (action === 'agent') addAgentNode(point.x, point.y);
+    else if (action === 'text') addTextNode(point.x, point.y);
     else if (action === 'paste') pasteClipboard(point);
     else if (action === 'fit') fitView();
     else if (action === 'shortcuts') openShortcut();
@@ -837,7 +1364,17 @@
       if (action === 'copy') { if (!state.selectedIds.has(node.id)) selectNode(node.id, false, false); copySelection(); }
       else if (action === 'remove') removeIds(state.selectedIds.has(node.id) ? state.selectedIds : [node.id]);
       else if (action === 'toggle') toggleGeneration(node);
+      else if (action === 'to-agent') convertToAgentNode(node);
+      else if (action === 'to-plain') convertToPlainNode(node);
       else if (action === 'open') openViewer({url: node.src, title: node.name, downloadable: false, invoker: $(`[data-node-id="${node.id}"]`)});
+      else if (action === 'unlink-prompt') unlinkPromptSource(node);
+      else if (action === 'reverse') reversePrompt(node);
+      /* 一张文本卡可能同时喂着好几张生图卡，逐条去断很烦，所以给一次全断的入口。 */
+      else if (action === 'unlink-consumers') {
+        const consumers = state.nodes.filter(item => item.promptSourceId === node.id);
+        consumers.forEach(item => unlinkPromptSource(item, {silent: true, render: false}));
+        if (consumers.length) { render(); scheduleSave(); toast(`已断开 ${consumers.length} 条提示词连线`); }
+      }
       else if (action === 'derive') {
         const primary = primaryOf(node);
         const ref = primary ? core.resultRefId(node.id, primary.id) : node.id;
@@ -847,6 +1384,65 @@
     closeContextMenu();
   }
 
+  let assetPickerEl = null;
+  function buildAssetPicker() {
+    const dialog = document.createElement('dialog');
+    dialog.className = 'asset-picker';
+    dialog.setAttribute('aria-label', '从素材库选择图片');
+    dialog.innerHTML = '<form method="dialog" class="asset-picker-head"><strong>从素材库选择</strong><button type="submit" class="asset-picker-close" aria-label="关闭" value="x">×</button></form><div class="asset-picker-filter-row"><input type="search" class="asset-picker-filter" placeholder="按名称过滤素材" aria-label="按名称过滤素材"></div><div class="asset-picker-grid" role="list"></div><p class="asset-picker-empty" hidden>素材库还是空的，先上传几张</p>';
+    document.body.appendChild(dialog);
+    dialog.querySelector('.asset-picker-close').addEventListener('click', () => closeAssetPicker());
+    const filter = dialog.querySelector('.asset-picker-filter');
+    /* The filter is an <input>, so core.isEditableTarget() reports true and the
+       canvas shortcut handler ignores keystrokes while it is focused. */
+    filter.addEventListener('input', () => renderAssetPickerGrid(dialog, dialog._assets || []));
+    dialog.addEventListener('click', event => { if (event.target === dialog) closeAssetPicker(); });
+    dialog.querySelector('.asset-picker-grid').addEventListener('click', event => {
+      const card = event.target.closest('.asset-picker-card'); if (!card) return;
+      const asset = (dialog._assets || []).find(a => String(a.id) === card.dataset.assetId);
+      if (!asset) return;
+      const point = {x: parseFloat(dialog.dataset.x) || 0, y: parseFloat(dialog.dataset.y) || 0};
+      insertAssetImage(asset, point);
+      closeAssetPicker();
+    });
+    return dialog;
+  }
+  function renderAssetPickerGrid(dialog, assets) {
+    const grid = dialog.querySelector('.asset-picker-grid');
+    const empty = dialog.querySelector('.asset-picker-empty');
+    const filterValue = (dialog.querySelector('.asset-picker-filter').value || '').trim().toLowerCase();
+    const list = assets.filter(a => !filterValue || (a.name || '').toLowerCase().includes(filterValue));
+    if (!assets.length) { empty.hidden = false; empty.textContent = '素材库还是空的，先上传几张'; grid.innerHTML = ''; return; }
+    if (!list.length) { empty.hidden = false; empty.textContent = '没有匹配名称的素材'; grid.innerHTML = ''; return; }
+    empty.hidden = true;
+    grid.innerHTML = list.map(asset => `<button type="button" class="asset-picker-card" data-asset-id="${escapeHtml(String(asset.id))}"><img src="${escapeHtml(asset.url)}" alt="${escapeHtml(asset.name || '素材')}" loading="lazy"><span class="asset-picker-name" title="${escapeHtml(asset.name || '')}">${escapeHtml(asset.name || '')}</span></button>`).join('');
+  }
+  async function openAssetPicker(point) {
+    if (!assetPickerEl) assetPickerEl = buildAssetPicker();
+    const dialog = assetPickerEl;
+    dialog.dataset.x = String(point.x); dialog.dataset.y = String(point.y);
+    dialog._assets = [];
+    dialog.querySelector('.asset-picker-filter').value = '';
+    renderAssetPickerGrid(dialog, []);
+    const empty = dialog.querySelector('.asset-picker-empty');
+    empty.hidden = false; empty.textContent = '加载素材库中…';
+    if (typeof dialog.showModal === 'function') dialog.showModal(); else dialog.hidden = false;
+    dialog.querySelector('.asset-picker-filter').focus();
+    try {
+      const payload = await responseJson(await fetch('/api/assets'));
+      dialog._assets = payload.assets || [];
+      renderAssetPickerGrid(dialog, dialog._assets);
+    } catch (error) {
+      empty.hidden = false; empty.textContent = `加载失败：${error.message}`;
+    }
+  }
+  function closeAssetPicker() { if (assetPickerEl && assetPickerEl.open) { assetPickerEl.close(); return true; } return false; }
+  function insertAssetImage(asset, point) {
+    const id = uid('image');
+    const node = {id, type: core.IMAGE, x: point.x, y: point.y, width: 280, aspect: (asset.width && asset.height) ? `${asset.width}/${asset.height}` : '4/3', naturalWidth: asset.width || 0, naturalHeight: asset.height || 0, src: asset.url, name: asset.name || '素材', localOnly: false, needsReselect: false, assetId: asset.id};
+    state.nodes.push(node);
+    render(); scheduleSave();
+  }
   function setPickerOpen(node, kind, open) {
     activePickerId = open ? node.id : '';
     activePickerKind = open ? kind : '';
@@ -869,10 +1465,10 @@
   function selectImageSetting(node, field, value) {
     const profile = profileById(node.profileId);
     node[field] = value;
-    /* Some models expose a narrower resolution set per ratio (gpt-image-2.5 has
-       no 4K for 1:3 / 3:1). Switching to such a ratio would otherwise leave the
-       node pinned to a tier the upstream does not publish, so coerce it onto the
-       first tier the new ratio actually supports. */
+    /* Some models publish a narrower tier set for particular ratios (Lovart's
+       1:3/3:1 stop at 2K; Grsai's start at 2K). Switching to such a ratio would
+       otherwise leave the node pinned to a tier the upstream does not publish, so
+       coerce it onto the first tier the new ratio actually supports. */
     if (field === 'ratio') {
       const tiers = profileTiers(profile, node.ratio);
       if (tiers.length && !tiers.includes(node.resolution)) node.resolution = tiers[0];
@@ -908,6 +1504,8 @@
     $('#canvas-upload').addEventListener('change', event => { const rect = viewport.getBoundingClientRect(); const point = pendingUploadPoint || worldPoint(rect.left + 180, rect.top + 150); pendingUploadPoint = null; importExternalImages([...event.target.files], point); event.target.value = ''; });
     $('#add-request').addEventListener('click', () => { const rect = viewport.getBoundingClientRect(); const p = worldPoint(rect.left + rect.width / 2 - 175, rect.top + 140); addGeneration(p.x, p.y); });
     $('[data-empty-action="request"]').addEventListener('click', () => $('#add-request').click());
+    $('#add-text')?.addEventListener('click', () => { const rect = viewport.getBoundingClientRect(); const p = worldPoint(rect.left + rect.width / 2 - 160, rect.top + 140); addTextNode(p.x, p.y); });
+    $('#add-agent')?.addEventListener('click', () => { const rect = viewport.getBoundingClientRect(); const p = worldPoint(rect.left + rect.width / 2 - 175, rect.top + 140); addAgentNode(p.x, p.y); });
     $('#fit-view').addEventListener('click', fitView); $('#zoom-in').addEventListener('click', () => zoomAt(state.viewport.zoom + .1, innerWidth / 2, innerHeight / 2)); $('#zoom-out').addEventListener('click', () => zoomAt(state.viewport.zoom - .1, innerWidth / 2, innerHeight / 2)); $('#zoom-reset').addEventListener('click', () => zoomAt(1, innerWidth / 2, innerHeight / 2));
     viewport.addEventListener('dragover', event => { event.preventDefault(); if (event.dataTransfer) event.dataTransfer.dropEffect = 'copy'; viewport.classList.add('file-over'); }); viewport.addEventListener('dragleave', () => viewport.classList.remove('file-over')); viewport.addEventListener('drop', event => { event.preventDefault(); viewport.classList.remove('file-over'); importExternalImages(event.dataTransfer, worldPoint(event.clientX, event.clientY), {warnUrl: true}); });
     viewport.addEventListener('wheel', event => { event.preventDefault(); zoomAt(state.viewport.zoom * (event.deltaY < 0 ? 1.08 : .92), event.clientX, event.clientY); }, {passive: false});
@@ -923,10 +1521,13 @@
       const tilePort = event.target.closest('.tile-port');
       if (tilePort) return beginConnection(event, node, tilePort.dataset.tileRef, '.tile-port');
       if (event.target.closest('.output-port')) return beginConnection(event, node, node.id, '.output-port');
+      /* 拉宽手柄先于卡片拖拽处理：手柄是个 button，startNodeDrag 本来就会放过它。 */
+      const resizeHandle = event.target.closest('.resize-handle');
+      if (resizeHandle) return startResize(event, resizeHandle, node);
       return startNodeDrag(event, node);
     });
-    viewport.addEventListener('pointermove', event => { lastCanvasPointer = worldPoint(event.clientX, event.clientY); movePointer(event); }); viewport.addEventListener('pointerup', endPointer); viewport.addEventListener('pointercancel', event => { const wasActive = Boolean((drag && drag.pointerId === event.pointerId) || (pan && pan.pointerId === event.pointerId) || (state.connecting && state.connecting.pointerId === event.pointerId)); if (state.connecting?.pointerId === event.pointerId) cancelConnection(); clearPointerInteraction(event.pointerId); if (wasActive) scheduleSave(); });
-    viewport.addEventListener('selectstart', event => { if (drag || pan || state.connecting) event.preventDefault(); });
+    viewport.addEventListener('pointermove', event => { lastCanvasPointer = worldPoint(event.clientX, event.clientY); movePointer(event); }); viewport.addEventListener('pointerup', endPointer); viewport.addEventListener('pointercancel', event => { const wasActive = Boolean((drag && drag.pointerId === event.pointerId) || (pan && pan.pointerId === event.pointerId) || (resizing && resizing.pointerId === event.pointerId) || (state.connecting && state.connecting.pointerId === event.pointerId)); if (state.connecting?.pointerId === event.pointerId) cancelConnection(); clearPointerInteraction(event.pointerId); if (wasActive) scheduleSave(); });
+    viewport.addEventListener('selectstart', event => { if (drag || pan || resizing || state.connecting) event.preventDefault(); });
     viewport.addEventListener('contextmenu', event => {
       const linkHit = event.target.closest?.('.link-hit');
       if (linkHit) { openContextMenu(event, null, {source: linkHit.dataset.source, target: linkHit.dataset.target}); return; }
@@ -942,7 +1543,7 @@
       openViewer({url: result.artifactUrl, title: `${providerLabel(result.provider)} · ${result.modelLabel || '生成结果'}`, downloadable: true, invoker: tile});
     });
     $('#canvas-nodes').addEventListener('focusin', event => {
-      const root = event.target.closest('.generation-node');
+      const root = event.target.closest('.canvas-node');
       if (!root || !event.target.closest('textarea,select,input,button,[role="radio"],[role="tab"]')) return;
       const node = nodeById(root.dataset.nodeId);
       if (node && !state.selectedIds.has(node.id)) selectNode(node.id, false, false);
@@ -950,9 +1551,28 @@
     $('#canvas-nodes').addEventListener('input', event => {
       const node = nodeById(event.target.closest('.canvas-node')?.dataset.nodeId);
       if (node && event.target.dataset.field === 'prompt') { node.prompt = event.target.value; syncDirty(node); scheduleSave(); scheduleLinks(); }
+      // 文本节点：文字随打随存，同时镜像给挂着它的生图卡（那边是只读的，只改 value）。
+      if (node && event.target.dataset.field === 'text') {
+        node.text = event.target.value;
+        const count = $(`[data-node-id="${node.id}"] [data-text-count]`);
+        if (count) count.textContent = `${node.text.length} 字`;
+        syncLinkedPrompts(node);
+        scheduleSave();
+      }
+      // Agent 轴的「卖点补充」：自由文本，随打随存，axis 变更要让卡片标记待重新生成。
+      if (node && event.target.dataset.agentField === 'selling_point_text' && node.agentSpec) { node.agentSpec.selling_point_text = event.target.value; syncDirty(node); scheduleSave(); }
     });
     $('#canvas-nodes').addEventListener('change', event => {
       const node = nodeById(event.target.closest('.canvas-node')?.dataset.nodeId); if (!node) return;
+      const roleRef = event.target.dataset.agentRole;
+      if (roleRef !== undefined && node.agentSpec) {
+        // 空串 = 未标注：删掉键而不是存空值，和 normalizeGenerationNode 的默认形状一致。
+        if (event.target.value) (node.agentRoles ||= {})[roleRef] = event.target.value;
+        else if (node.agentRoles) delete node.agentRoles[roleRef];
+        syncDirty(node); scheduleSave(); return;
+      }
+      const agentField = event.target.dataset.agentField;
+      if (agentField && node.agentSpec) { node.agentSpec[agentField] = event.target.value; syncDirty(node); scheduleSave(); return; }
       const field = event.target.dataset.field;
       if (field === 'count') node.count = core.clampCount(event.target.value);
       else if (field === 'quality') node.quality = event.target.value;
@@ -962,8 +1582,13 @@
       if (suppressClick) { suppressClick = false; return; }
       const nodeEl = event.target.closest('.canvas-node'); const node = nodeEl && nodeById(nodeEl.dataset.nodeId); if (!node) return;
       if (event.target.closest('[data-delete-node]')) { removeIds([node.id]); return; }
+      if (event.target.closest('[data-duplicate-text]')) { duplicateTextNode(node); return; }
+      if (event.target.closest('[data-reverse-prompt]')) { reversePrompt(node); return; }
       if (event.target.closest('[data-retry-generation]')) { retryResult(event.target.closest('[data-retry-generation]').dataset.retryGeneration, event.target.closest('[data-retry-generation]')); return; }
       if (event.target.closest('[data-reselect-image]')) { reselectImage(node); return; }
+      if (event.target.closest('[data-optimize-text]')) { optimizePromptText(event.target.closest('[data-optimize-text]')); return; }
+      if (event.target.closest('[data-unlink-prompt]')) { unlinkPromptSource(node); return; }
+      if (event.target.closest('[data-to-agent]')) { convertToAgentNode(node); return; }
       if (!core.isGenerationNode(node)) {
         if (event.target.closest('[data-open-image]')) { openViewer({url: node.src, title: node.name, downloadable: false, invoker: nodeEl}); return; }
         if (event.detail === 0 || pointerSelectionId !== node.id) selectNode(node.id, event.shiftKey);
@@ -986,12 +1611,11 @@
       else {
         const tile = event.target.closest('.result-tile');
         const result = tile && batch ? resultInNode(node, tile.dataset.resultId) : null;
-        /* Clicking into a textarea/select must not yank focus back to the node
-           container. startNodeDrag bails out on editable targets, so
-           pointerSelectionId is stale here and the fallback would otherwise
-           call selectNode() with focus=true — whose rAF then focuses the
-           <article tabindex="-1"> and steals the caret. Selection on that path
-           is already handled by the focusin listener above (focus=false). */
+        /* 点进输入控件时不要抢焦点。focusin(950) 已经用 selectNode(...,false) 完成了选中，
+           而这里再调一次默认 focus=true 的 selectNode 会把焦点从 textarea 挪到节点容器
+           (201 行的 requestAnimationFrame) —— 用户看到"选中了却打不了字"。
+           startNodeDrag(532) 对 textarea 提前 return、不写 pointerSelectionId，所以这个
+           分支在每次点击输入框时都会命中。图片节点分支(975)没有输入控件，无需此守卫。 */
         if ((event.detail === 0 || pointerSelectionId !== node.id) && !core.isEditableTarget(event.target)) selectNode(node.id, event.shiftKey);
         pointerSelectionId = '';
         if (!result) return;
@@ -1005,13 +1629,30 @@
     $('#context-menu').addEventListener('click', event => { const action = event.target.closest('[data-context-action]')?.dataset.contextAction; if (action) runContextAction(action); });
     $('#context-menu').addEventListener('keydown', event => { const items = $$('[role="menuitem"]:not(:disabled)', event.currentTarget); const index = items.indexOf(document.activeElement); if (event.key === 'ArrowDown' || event.key === 'ArrowUp') { event.preventDefault(); items[(index + (event.key === 'ArrowDown' ? 1 : -1) + items.length) % items.length]?.focus(); } else if (event.key === 'Home') items[0]?.focus(); else if (event.key === 'End') items.at(-1)?.focus(); });
     document.addEventListener('pointerdown', event => { if (!event.target.closest('#context-menu')) closeContextMenu(); if (!event.target.closest('.visual-picker')) closeActivePicker(true); });
+    /* `error` does not bubble, so we listen in the capture phase on document.
+       Only image nodes backed by a server asset (http(s) src, not localOnly
+       data:/blob:) can expire with a 404; mark them so the node re-renders into
+       the upload-missing state and reuse the existing re-upload affordance. */
+    document.addEventListener('error', event => {
+      const img = event.target;
+      if (!img || img.tagName !== 'IMG') return;
+      const article = img.closest('[data-node-id]');
+      if (!article || article.dataset.nodeType !== core.IMAGE) return;
+      const src = img.getAttribute('src') || '';
+      if (src.startsWith('data:') || src.startsWith('blob:')) return;
+      const node = nodeById(article.dataset.nodeId);
+      if (!node || node.localOnly || node.assetExpired) return;
+      node.assetExpired = true;
+      render();
+    }, true);
     document.addEventListener('keydown', event => {
-      const editable = core.isEditableTarget(event.target); const meta = event.ctrlKey || event.metaKey; const canvasFocused = viewport === document.activeElement || Boolean(document.activeElement?.closest?.('.canvas-node')) || Boolean(event.target.closest?.('#canvas-viewport'));
+      const editable = core.isEditableTarget(event.target);
+      const meta = event.ctrlKey || event.metaKey; const canvasFocused = viewport === document.activeElement || Boolean(document.activeElement?.closest?.('.canvas-node')) || Boolean(event.target.closest?.('#canvas-viewport'));
       if (event.key === 'Enter' || event.key === ' ') {
         const tile = event.target.closest?.('.result-tile');
         if (tile && !editable) { const node = nodeById(tile.closest('.canvas-node')?.dataset.nodeId); const result = node && resultInNode(node, tile.dataset.resultId); if (node && result) { event.preventDefault(); activateResult(node, displayBatch(node), result); return; } }
       }
-      if (event.key === 'Escape') { let closed = cancelConnection(); closed = clearPointerInteraction() || closed; closed = closeContextMenu(true) || closed; closed = closeActivePicker() || closed; if ($('#workspace-layout').classList.contains('drawer-open')) { setProjectDrawer(false); closed = true; } if (!$('#shortcut-popover').hidden) { closeShortcut(); closed = true; } if ($('#image-viewer').open) { closeViewer(); closed = true; } if ($('#project-rename-dialog').open) { closeRenameProjectDialog(); closed = true; } closed = clearLinkSelection() || closed; if (closed) { escapeArmed = true; event.preventDefault(); return; } if (escapeArmed || state.selectedIds.size) { clearSelection(); escapeArmed = false; event.preventDefault(); } return; }
+      if (event.key === 'Escape') { let closed = cancelConnection(); closed = clearPointerInteraction() || closed; closed = closeContextMenu(true) || closed; closed = closeActivePicker() || closed; closed = closeAssetPicker() || closed; if ($('#workspace-layout').classList.contains('drawer-open')) { setProjectDrawer(false); closed = true; } if (!$('#shortcut-popover').hidden) { closeShortcut(); closed = true; } if ($('#image-viewer').open) { closeViewer(); closed = true; } if ($('#project-rename-dialog').open) { closeRenameProjectDialog(); closed = true; } if ($('#project-delete-dialog').open) { closeDeleteProjectDialog(); closed = true; } closed = clearLinkSelection() || closed; if (closed) { escapeArmed = true; event.preventDefault(); return; } if (escapeArmed || state.selectedIds.size) { clearSelection(); escapeArmed = false; event.preventDefault(); } return; }
       if ($('#image-viewer').open) {
         if (editable) return;
         if (event.key === '+' || event.key === '=') { event.preventDefault(); zoomViewer(viewerState.scale * 1.2); }
@@ -1052,6 +1693,9 @@
     $('#sidebar-collapse').addEventListener('click', () => setSidebarCollapsed(!$('#workspace-layout').classList.contains('sidebar-collapsed')));
     $$('[data-new-project]').forEach(button => button.addEventListener('click', createProject));
     $$('[data-rename-project-id]').forEach(button => button.addEventListener('click', () => openRenameProjectDialog(button)));
+    $$('[data-delete-project-id]').forEach(button => button.addEventListener('click', () => openDeleteProjectDialog(button)));
+    $$('[data-close-delete]').forEach(button => button.addEventListener('click', closeDeleteProjectDialog));
+    $('#project-delete-dialog').addEventListener('click', event => { if (event.target === event.currentTarget) closeDeleteProjectDialog(); });
     $('#project-sidebar').addEventListener('click', event => { if (event.target.closest('a')) setProjectDrawer(false); });
     $$('[data-close-rename]').forEach(button => button.addEventListener('click', closeRenameProjectDialog)); $$('[data-close-viewer]').forEach(button => button.addEventListener('click', closeViewer)); $('[data-close-overlay]').addEventListener('click', closeShortcut);
     const viewerDialog = $('#image-viewer'); const viewerStage = $('.viewer-stage', viewerDialog);

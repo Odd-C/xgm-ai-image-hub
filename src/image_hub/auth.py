@@ -38,23 +38,32 @@ def verify_password(password: str, encoded: str) -> bool:
 def current_user(
     request: Request, session: Session, *, allow_password_change: bool = False
 ) -> User:
+    """解析当前登录用户；密码未改只作提示，不阻断请求。"""
     user_id = request.session.get("user_id")
     user = session.get(User, user_id) if user_id else None
     session_auth_version = request.session.get("auth_version")
     if (
         user is None
         or not user.is_active
+        or user.deleted_at is not None
         or session_auth_version != user.auth_version
     ):
         request.session.clear()
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="请先登录")
-    if user.must_change_password and not allow_password_change:
-        raise HTTPException(status_code=403, detail="请先修改初始密码")
     return user
 
 
+ROLE_USER = "user"
+ROLE_ADMIN = "admin"
+ADMIN_ROLES = frozenset({ROLE_ADMIN})
+
+
+def is_admin(user: User) -> bool:
+    return user.role in ADMIN_ROLES
+
+
 def require_admin(user: User) -> None:
-    if user.role != "admin":
+    if user.role not in ADMIN_ROLES:
         raise HTTPException(status_code=403, detail="需要管理员权限")
 
 

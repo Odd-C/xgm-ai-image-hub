@@ -1,0 +1,1121 @@
+{
+  "meta": {
+    "schema_version": "1.0",
+    "generated": "2026-09-21",
+    "purpose": "电商平台图片规范 → 生图提示词约束的机读字典。skill 组装器按 platform key 取 constraint_keys，映射 constraint_blocks 拼进 prompt 的 Constraints / Avoid 段。",
+    "usage": "load_platform(key) -> { canvas, background, fill_pct, constraint_keys } ; load_banner_slot(key) -> { ratio, px, safe_zone, constraint_keys } ; render_prompt(platform|slot, category) -> 拼装英文约束句",
+    "section_note": "platforms = 商品图槽位（23 平台，1:1 白底为主）。banner_slots = 品牌内容与广告位槽位（A+ / Brand Story / Stores / 广告，共 16 个），两者是互不通用两套体系，约束块不共用。banner_defaults.universal_banner_constraint_en 可直接作为任意 banner 槽位的通用前置约束。",
+    "disclaimer": "规范以各平台卖家后台实时文档为准。source_tier=official 表示取自平台官方页面；secondary 表示取自二手来源（多源交叉一致但需后台复核）。上线前务必核自己账号后台。",
+    "unit_note": "px 为像素；fill_pct 为主体占画面面积百分比；MB 为单图文件上限"
+  },
+
+  "shared_defaults": {
+    "master_canvas_px": [2000, 2000],
+    "master_ratio": "1:1",
+    "master_color_mode": "sRGB",
+    "master_format": "JPEG",
+    "safe_margin_pct": 2.5,
+    "note": "一次出 2000×2000 白底方图母版，再按平台裁切导出，可覆盖绝大多数平台的下限。Amazon 是唯一会因 RGB 偏差拒图的平台，按它做母版最安全。"
+  },
+
+  "constraint_blocks": {
+    "bg_pure_white": {
+      "en": "Background must be pure white, RGB 255,255,255 — no off-white, cream, light grey, gradient, or colored backdrop.",
+      "zh": "纯白底 RGB 255,255,255，禁止米白/浅灰/渐变/彩色背景",
+      "why": "Amazon 与 Walmart 用算法扫描背景像素值，低于 250 即判违规"
+    },
+    "bg_white_or_clean": {
+      "en": "Background must be clean white or neutral solid — no busy scene, no clutter.",
+      "zh": "白或中性纯色干净背景，不允许杂乱场景"
+    },
+    "bg_lifestyle_ok": {
+      "en": "Lifestyle or contextual background is allowed for this slot.",
+      "zh": "副图位允许生活场景背景"
+    },
+    "fill_85": {
+      "en": "Product fills at least 85% of the image frame; crop tight, leave only a thin margin.",
+      "zh": "主体占画面 ≥85%，裁紧，只留极窄边距"
+    },
+    "fill_80": {
+      "en": "Product fills at least 80% of the image frame.",
+      "zh": "主体占画面 ≥80%"
+    },
+    "fill_75_90": {
+      "en": "Product occupies 75–90% of the frame — not floating small in empty space, not bleeding off the edge.",
+      "zh": "主体占画面 75–90%，不小也不出血"
+    },
+    "fill_70": {
+      "en": "Product occupies about 70% or more of the frame, centered.",
+      "zh": "主体居中，占画面 ≥70%"
+    },
+    "fill_50": {
+      "en": "Product occupies at least 50% of the frame with a white buffer around it.",
+      "zh": "主体占画面 ≥50%，四周留白缓冲（Walmart 最低线，推荐 70–80%）"
+    },
+    "edge_clearance": {
+      "en": "Keep at least 2.5% clear margin on every side — the product may nearly touch the safe area but must never cross it.",
+      "zh": "四边各留 ≥2.5% 安全边距，主体不得压边"
+    },
+    "no_crop_product": {
+      "en": "Show the entire product within the frame; do not cut off any part of it.",
+      "zh": "完整展示商品，不得裁掉任何部分"
+    },
+    "single_view": {
+      "en": "Show the product only once from a single view — never combine front and back, or multiple angles, in one image.",
+      "zh": "单视角单件展示，禁止一图多视角拼合"
+    },
+    "no_text_overlay": {
+      "en": "No text, logos, watermarks, badges, borders, color blocks or decorative graphics anywhere in the image.",
+      "zh": "禁止任何文字/Logo/水印/徽章/边框/色块"
+    },
+    "no_platform_badge": {
+      "en": "No platform badges such as Best Seller, Amazon's Choice, Top Seller, or any award/rating graphics.",
+      "zh": "禁止平台徽章与评级图形"
+    },
+    "no_promo_claim": {
+      "en": "No promotional claims such as free shipping, sale price, discount badges, or five-star review imagery.",
+      "zh": "禁止促销声明、价格标签、五星评价图"
+    },
+    "no_props": {
+      "en": "Show only the product and accessories actually included in the package — no extra props, hands, food, or decorative items.",
+      "zh": "只出现随货配件，禁止额外道具/手/食物"
+    },
+    "no_packaging": {
+      "en": "Do not include retail packaging unless packaging is a product feature.",
+      "zh": "不出现包装（除非包装本身是产品特性）"
+    },
+    "no_frame_border": {
+      "en": "No borders, frames, or visible seams between composited elements.",
+      "zh": "禁止边框、画框、合成拼接产生的可见分界线"
+    },
+    "no_mannequin": {
+      "en": "No mannequin of any kind — invisible (ghost) mannequin, transparent, solid-color, flesh-toned, framework, or on a hanger.",
+      "zh": "禁止任何形式人台，含 ghost mannequin"
+    },
+    "apparel_on_model": {
+      "en": "Adult apparel must be shown on a standing human model — not sitting, kneeling, leaning or lying down.",
+      "zh": "成人服装必须真人模特站姿展示"
+    },
+    "apparel_off_model_flat": {
+      "en": "Show flat (off-figure), without a model, using pins or stuffing with seams as a guideline to keep left-right symmetry.",
+      "zh": "平铺无模特，用别针/填充并以缝线对齐保持左右对称"
+    },
+    "footwear_single_left_45": {
+      "en": "Show a single shoe facing left at a 45-degree angle.",
+      "zh": "单只鞋，朝左 45°"
+    },
+    "shoe_pair": {
+      "en": "Show the pair of shoes together.",
+      "zh": "鞋类主图展示成双"
+    },
+    "scale_reference": {
+      "en": "Include a scale reference (a hand holding the product, or a common object beside it) so size is unambiguous.",
+      "zh": "加入比例参照（手持或常见物体并置）"
+    },
+    "photorealistic_only": {
+      "en": "Must be a photorealistic representation of the real product — no illustration, 3D render, sketch, or stylized reinterpretation.",
+      "zh": "必须是实物写实呈现，禁止插画/3D 渲染/草图"
+    },
+    "preserve_product_identity": {
+      "en": "Preserve exact shape, proportions, packaging, label placement, logo, colors and materials. Do not redesign, add, or remove product elements.",
+      "zh": "严格保持外形/比例/包装/标签/Logo/配色/材质，不重设计不增减"
+    },
+    "even_studio_light": {
+      "en": "Soft, even studio lighting with controlled contact shadow for grounding; no harsh shadows, no blown highlights.",
+      "zh": "柔和均匀棚拍光，带接地接触阴影，无硬阴影无过曝"
+    },
+    "series_consistency": {
+      "en": "Keep the same tone, lighting, background treatment and framing across every image in the set — one visual system per listing.",
+      "zh": "整套图色调/光影/背景/构图统一（Temu 明确要求）"
+    },
+    "text_area_ceiling_20": {
+      "en": "Text elements must cover no more than 20% of the image area, measured on a 10×10 grid; prefer fewer, larger items.",
+      "zh": "文字元素占画面 ≤20%（10×10 网格计），优先少而大"
+    },
+    "text_area_ceiling_30": {
+      "en": "Promotional text must cover no more than 30% of the image area; foreground-background contrast must stay above 50; keep the focal point in the central third.",
+      "zh": "促销文字占比 ≤30%，前后景色差 >50，焦点在中心 1/3"
+    },
+    "no_misleading_scene": {
+      "en": "The scene must be a plausible use context for the product, with consistent perspective, scale, contact shadow and light direction — never float the product or distort its scale.",
+      "zh": "场景须合理可信，透视/比例/接触阴影/光向一致，禁止悬浮或比例失真"
+    },
+    "no_before_after": {
+      "en": "No before-and-after imagery for beauty, health or supplement products.",
+      "zh": "美妆/健康/保健品类禁止前后对比图"
+    },
+    "no_unsubstantiated_claim": {
+      "en": "Avoid unverifiable claims in image text (cures, clinically proven, FDA approved, #1 best seller) — they trigger manual review.",
+      "zh": "禁止不可验证的功效宣称"
+    },
+    "model_adult_only": {
+      "en": "Models must look 18 or older; no face close-ups; no heavy skin retouching or filters.",
+      "zh": "模特须成年观感，禁止人脸特写与过度磨皮"
+    },
+    "no_nudity": {
+      "en": "No nudity or sexually suggestive content, including for models and drawings.",
+      "zh": "禁止裸露或性暗示"
+    },
+    "ai_disclose_synthetic_person": {
+      "en": "If the image contains photorealistic AI-generated people, it must be tagged with IPTC metadata keyword 'contains-synthetic-performer' in dc:subject (XMP) before upload.",
+      "zh": "含写实 AI 人物须写 XMP dc:subject=contains-synthetic-performer",
+      "action": "post-process step, not a prompt constraint",
+      "why": "Amazon 2026-08-03 官方公告；部分司法辖区强制披露"
+    },
+    "wide_safe_zone_70": {
+      "en": "Keep all vital visual elements inside the central 70% horizontal band — up to 15% may be cropped from each side.",
+      "zh": "关键视觉元素全部落在中间 70% 水平带内；左右各可能被裁 15%",
+      "why": "Amazon Stores Hero 官方硬性安全区要求（最多裁 30%）"
+    },
+    "bottom_20_clear": {
+      "en": "Keep the bottom 20% of the frame free of the subject and of any critical detail — it will be covered by a link title or text overlay.",
+      "zh": "底部 20% 留空，不放主体与关键细节",
+      "why": "Amazon Stores 带链接 tile 底部遮挡：矩形 19%、方形 12%"
+    },
+    "subject_offset_side": {
+      "en": "Place the subject off-center to one side and leave clean negative space on the opposite side for the platform's own text layer.",
+      "zh": "主体偏一侧构图，另一侧留白给平台文字层",
+      "why": "A+ / Stores 的文字由平台叠加，不是烧在图上"
+    },
+    "lifestyle_context_scene": {
+      "en": "Show the product in a real, believable use context with environment and scale cues — not isolated on a white background.",
+      "zh": "真实使用场景，含环境与尺度线索；不是白底产品图",
+      "why": "A+ Header / Brand Story 焦点图 / SB 自定义图要的是情境，白底产品图在这类位是错答案"
+    },
+    "no_embedded_text": {
+      "en": "Do not bake text into the image; leave clean space for the platform's text overlay layer.",
+      "zh": "不在图上烧字，留白给平台文字层",
+      "why": "Amazon Stores 官方不建议嵌入文本（SEO 与屏幕阅读器读不到）；A+ 文字由模块字段承载"
+    },
+    "text_legible_mobile": {
+      "en": "Any text that must appear in the image has to stay legible at mobile size — large, high-contrast, no thin type.",
+      "zh": "必须出现的文字须在移动端可读：字号够大、高对比、不用细体"
+    },
+    "no_price_promo_time": {
+      "en": "No prices, discounts, promotional or time-sensitive language anywhere in the image.",
+      "zh": "禁止价格、折扣、促销与时效性表述",
+      "why": "A+ 官方 Not acceptable 列表明文禁止促销语言、定价、时效性引用"
+    },
+    "no_superlative_claim": {
+      "en": "No unsubstantiated superlatives, rankings, award or performance claims.",
+      "zh": "禁止未经证实的最高级、排名、获奖与功效宣称",
+      "why": "A+ 拒审高频原因：best / #1 / award-winning 无出处"
+    },
+    "no_qr_contact_url": {
+      "en": "No QR codes, URLs, social handles, email addresses or off-platform contact information in the image.",
+      "zh": "禁止二维码、网址、社媒账号、邮箱与站外联系方式"
+    },
+    "no_competitor_ref": {
+      "en": "No competitor comparison, competitor brand names or conquesting claims.",
+      "zh": "禁止竞品比较与竞品品牌名"
+    },
+    "static_no_animation": {
+      "en": "Static image only — no animation, flashing, or simulated interactive elements.",
+      "zh": "仅静态图，禁动效与模拟交互元素",
+      "why": "Amazon 官方：动效仅允许在视频中；展示广告禁模拟交互元素"
+    },
+    "no_fake_button_ui": {
+      "en": "Do not render button shapes, fake UI chrome or simulated interface elements in the image.",
+      "zh": "禁止按钮形状与模拟界面元素",
+      "why": "Amazon 官方：970×250 广告牌 CTA 不得采用按钮形状"
+    },
+    "ai_tag_aplus_checkbox": {
+      "en": "If the image contains photorealistic AI-generated people, tick the AI-generated people option when uploading to A+ Creative Assets.",
+      "zh": "含写实 AI 人物时，在 A+ Creative Assets 上传处勾选 AI-generated people",
+      "action": "post-process step, not a prompt constraint",
+      "why": "A+ 官方提供勾选框，Amazon 自动写入元数据；无需手工写 IPTC（商品主图路径才需要）"
+    },
+    "wm_main_text_props_allowed": {
+      "en": "Text, colour and relevant props are permitted on the main image — but no watermark, no seller name, no logo, no claim or promotional language, no accessories not included in the box, and no excessive props.",
+      "zh": "主图允许文字、颜色与相关道具；但禁水印、卖家名、Logo、宣称或促销语、未随货配件、过多道具",
+      "why": "Walmart 官方只列这几类禁项，未禁一般文字与道具 —— 与 Amazon「主图严禁任何文字道具」相反"
+    },
+    "no_non_english": {
+      "en": "All text appearing in the image must be in English; no other languages.",
+      "zh": "图上文字仅限英语，不得出现其他语言"
+    },
+    "no_other_retailer_logo": {
+      "en": "No Walmart branding or any other retailer / e-commerce platform logo or name in the image.",
+      "zh": "禁止 Walmart 及任何其他零售商、电商平台的 Logo 或名称"
+    },
+    "no_out_of_stock_hint": {
+      "en": "Do not include anything suggesting the product is out of stock or sold out.",
+      "zh": "不得出现暗示缺货/售罄的内容"
+    },
+    "no_duplicate_image": {
+      "en": "No duplicated images within the same listing.",
+      "zh": "同一 listing 内不得有重复图"
+    },
+    "crop_buffer_5": {
+      "en": "Crop with roughly a 5% buffer between the product edge and the nearest horizontal or vertical frame border.",
+      "zh": "产品边缘到最近的水平或垂直画框边留约 5% 缓冲",
+      "why": "Walmart 官方 Fashion Content Standards 明文裁切标准"
+    },
+    "apparel_portrait_3x4": {
+      "en": "Fashion items: compose and export in 3:4 portrait — square images are not accepted for this category.",
+      "zh": "服装类按 3:4 竖版构图与导出；该品类拒收方图"
+    },
+    "wm_ai_truthful_only": {
+      "en": "AI-generated imagery is permitted only if it is accurate, truthful, not misleading and rights-compliant.",
+      "zh": "AI 生成图允许使用，但必须准确、真实、不误导且权利合规",
+      "why": "Walmart 官方明文；无 XMP 披露要求（与 Amazon 不同）"
+    }
+  },
+
+  "platforms": [
+    {
+      "key": "amazon",
+      "name_zh": "Amazon 亚马逊",
+      "scope": "全球（US/EU/JP/…），服装类各区域有差异",
+      "official_source": "https://sellercentral.amazon.com/help/hub/reference/external/G1881",
+      "source_tier": "official",
+      "canvas": { "ratio": "1:1", "min_px_side": 500, "recommended_px": [2000, 2000], "max_px_side": 10000, "dpi_min": 72, "export_px": [2000, 2000] },
+      "background": { "main": "pure_white", "rgb": [255, 255, 255], "secondary": "white_or_lifestyle" },
+      "fill_pct": { "main_min": 85, "secondary_min": 70 },
+      "formats": ["JPEG", "TIFF", "PNG", "GIF(static)"],
+      "color_mode": "sRGB（RGB 优先）",
+      "max_file_mb": 10,
+      "image_count": { "min": 1, "max": 9, "recommended": 7 },
+      "text_policy": { "main": "forbidden", "secondary": "allowed", "note": "SWCH 色卡图可含文字与价格" },
+      "naming": "ASIN.MAIN.jpg / ASIN.PT01.jpg / ASIN.SWCH.jpg",
+      "ai_policy": {
+        "stance": "允许 AI 增强、抠图换底、分辨率提升、副图场景生成；主图必须是实物真实呈现",
+        "main_image": "禁止 AI 凭空生成与实物不符的产品主图",
+        "people_disclosure": "XMP dc:subject = contains-synthetic-performer",
+        "no_tag_when": ["仅真实人物（即使 AI 修饰过）", "无人物", "人物非写实", "影视/游戏角色"]
+      },
+      "apparel": {
+        "adult": "on-model，模特站姿（鼓励轮椅/义肢等多样身体呈现）",
+        "kids_accessories_multipack": "off-model 平铺",
+        "mannequin": "禁止任何人台，含 ghost mannequin（仅可作副图）",
+        "footwear": "单只鞋朝左 45°",
+        "kids_underwear_swimwear": "平铺无模特（违规直接下架）"
+      },
+      "forbidden": ["文字/Logo/水印/边框/色块/图形", "平台徽章", "未随货配件道具", "一图多视角", "包装", "评论五星图与促销声明", "裸露性暗示", "占位图"],
+      "constraint_keys": ["bg_pure_white", "fill_85", "edge_clearance", "no_crop_product", "single_view", "no_text_overlay", "no_platform_badge", "no_promo_claim", "no_props", "no_packaging", "no_mannequin", "photorealistic_only", "preserve_product_identity", "even_studio_light", "no_nudity", "ai_disclose_synthetic_person"]
+    },
+    {
+      "key": "walmart",
+      "name_zh": "Walmart Marketplace",
+      "scope": "美国为主",
+      "official_source": "https://marketplacelearn.walmart.com/guides/Item+setup/Item+content,+imagery,+and+media/Product-detail-page:-Image-guidelines-&-requirements",
+      "source_tier": "official",
+      "canvas": { "ratio": "1:1", "recommended_px": [2200, 2200], "zoom_threshold_px": 1500, "swatch_px": [100, 100], "export_px": [2200, 2200], "note": "2200×2200 为官方要求像素；1500×1500 是启用 zoom 的下限" },
+      "background": { "main": "seamless_white", "rgb": [255, 255, 255], "secondary": "lifestyle_allowed", "note": "大件商品主图可在预期环境中呈现" },
+      "fill_pct": { "main_min": null, "recommended": 85, "source": "⚠️ 官方页无任何百分比，只有定性表述「裁到尽量贴近画框、避免过多背景留白」；85% 为二手多源口径。上一版记的 50%/2.5% 边距查不到官方出处，已作废" },
+      "formats": ["JPEG", "JPG", "PNG", "BMP"],
+      "color_mode": "RGB",
+      "bit_depth": 8,
+      "max_file_mb": 5,
+      "image_count": { "min": 4, "max": null, "recommended": 6, "note": "官方只给「建议至少 4 张」，未给上限；24 张为二手说法" },
+      "text_policy": { "main": "restricted —— 允许文字、颜色与相关道具；禁水印、卖家名、Logo、宣称或促销语", "secondary": "allowed", "note": "与 Amazon 相反：Amazon 主图严禁任何文字道具，Walmart 不禁" },
+      "naming": "建议 14 位 GTIN（如 00123456789012.jpg）",
+      "ai_policy": {
+        "stance": "官方明文允许 AI 生成内容，约束为 accurate / truthful / rights-compliant / not misleading",
+        "main_image": "与主图口径相同——只要求与实物一致，不禁止凭空生成",
+        "disclosure": "无 XMP 或元数据披露要求（与 Amazon 的 contains-synthetic-performer 不同）",
+        "official_quote": "Images generated by artificial intelligence must be truthful, accurate and not misleading."
+      },
+      "apparel": {
+        "general_note": "3P 通用规范无服装专属强制",
+        "fashion_official_alt": {
+          "scope": "1P 供应商口径，源自 Walmart《Fashion / Apparel Content Standards Style Guide》",
+          "ratio": "3:4",
+          "px": [1500, 2000],
+          "dpi": { "min": 72, "preferred": 300 },
+          "color_mode": "sRGB",
+          "buffer_pct": 5,
+          "rules": ["明令不接受方图", "每张图仅一名模特", "产品/模特居中", "非白底仅限 Additional Alternate 生活/编辑图", "ghost image 去除阴影", ".jpg 小写扩展名（大写无法 feed）"],
+          "naming": "GTIN_SW / GTIN_SWAV1 / GTIN_SWAV2…"
+        },
+        "conflict_note": "⚠️ 3P 通用 1:1/2200² 与服装类 3:4/1500×2000 是两套文档，服装类出图前须确认账号走哪套"
+      },
+      "extra": [
+        "禁止非英语文字",
+        "禁止出现 Walmart 或其他零售商/电商平台 Logo 与名称",
+        "禁止商品缺货/售罄暗示",
+        "同 listing 不得重复图",
+        "需提供 swatch 图（如适用），100×100",
+        "不得把小图放大填充（会降质）",
+        "无图时只能用 Walmart 指定占位图，替换前不会发布",
+        "Image URL：须以图片扩展名结尾，端口限 8080/80/443/8443；禁 HTML 页、带 query 的 URL、未编码特殊字符、Dropbox"
+      ],
+      "forbidden": ["水印/卖家名/Logo", "未随货配件", "过多道具", "宣称与促销语言", "Walmart 或其他平台 Logo", "非英语文字", "缺货暗示", "重复图"],
+      "constraint_keys": ["bg_pure_white", "edge_clearance", "wm_main_text_props_allowed", "no_non_english", "no_other_retailer_logo", "no_out_of_stock_hint", "no_duplicate_image", "no_promo_claim", "wm_ai_truthful_only", "photorealistic_only", "preserve_product_identity", "even_studio_light", "series_consistency"]
+    },
+    {
+      "key": "ebay",
+      "name_zh": "eBay",
+      "scope": "全球",
+      "official_source": "https://www.ebay.com/help/policies/listing-policies/picture-policy（官方页有反爬，数字取自多源交叉）",
+      "source_tier": "secondary",
+      "canvas": { "ratio": "1:1 或 16:9", "min_px_side": 500, "recommended_px": [1600, 1600], "export_px": [1600, 1600] },
+      "background": { "main": "white_or_neutral（推荐，非强制）", "secondary": "any_clean" },
+      "fill_pct": { "main_min": null, "recommended": 80 },
+      "formats": ["JPEG", "PNG", "GIF", "BMP", "TIFF", "WebP", "HEIC", "AVIF"],
+      "color_mode": "sRGB（CMYK 会偏色）",
+      "max_file_mb": 12,
+      "image_count": { "min": 1, "max": 24, "recommended": 8 },
+      "text_policy": { "main": "forbidden", "secondary": "discouraged" },
+      "ai_policy": { "stance": "无专门 AI 条款，但禁止误导性图片；二手/翻新/手工品必须用实物照，目录图仅限全新未拆封" },
+      "apparel": { "note": "官方建议用人台或真人模特，避免挂衣架" },
+      "extra": ["禁止拼图/截图/含电话或 URL 的图", "禁止跨 listing 重复图", "禁止库存图作二手品主图（AI 会识别并降权）", "Gallery Plus 缩略图 400×400"],
+      "forbidden": ["边框", "添加的文字", "营销图形", "水印", "占位图", "误导性图片"],
+      "constraint_keys": ["bg_white_or_clean", "fill_80", "no_crop_product", "no_text_overlay", "no_frame_border", "no_props", "photorealistic_only", "preserve_product_identity", "even_studio_light"]
+    },
+    {
+      "key": "shopify",
+      "name_zh": "Shopify（独立站）",
+      "scope": "全球 / 卖家自建",
+      "official_source": "https://help.shopify.com/en/manual/products/product-media",
+      "source_tier": "official（尺寸数字为官方建议，非强制）",
+      "canvas": { "ratio": "自由（全套统一即可）", "recommended_px": [2048, 2048], "max_px_side": 5000, "max_megapixels": 25, "export_px": [2048, 2048] },
+      "background": { "main": "无要求", "secondary": "无要求" },
+      "fill_pct": { "main_min": null },
+      "formats": ["JPEG", "PNG", "WebP", "GIF", "AVIF"],
+      "color_mode": "sRGB",
+      "max_file_mb": 20,
+      "image_count": { "max": 250 },
+      "text_policy": { "main": "allowed", "secondary": "allowed" },
+      "ai_policy": { "stance": "平台层无限制，约束来自广告投放渠道（Google/Meta）与支付/品牌方" },
+      "extra": ["CDN 自动转 WebP/AVIF", "支持 3D 模型与 AR", "建议全套图比例一致以优化 CLS"],
+      "forbidden": [],
+      "constraint_keys": ["preserve_product_identity", "even_studio_light", "series_consistency"]
+    },
+    {
+      "key": "tiktok_shop",
+      "name_zh": "TikTok Shop",
+      "scope": "US/UK/SEA",
+      "source_tier": "secondary",
+      "canvas": { "ratio": "1:1", "min_px_side": 600, "recommended_px": [1200, 1200], "export_px": [1200, 1200], "photo_mode_post": [1080, 1920], "note": "listing 位平台会强制裁成 1:1，构图必须按方形预留安全区" },
+      "background": { "main": "clean_white_or_neutral", "secondary": "lifestyle_allowed" },
+      "fill_pct": { "main_min": 80, "secondary_min": 70 },
+      "formats": ["JPEG", "PNG"],
+      "max_file_mb": 5,
+      "image_count": { "max": 9, "recommended": 5 },
+      "text_policy": { "main": "forbidden", "secondary": "allowed（须可读、不遮挡主体）" },
+      "ai_policy": { "stance": "AI 审核严格；过度饱和、过度锐化、合成失实会被判误导" },
+      "extra": ["服装鞋包配件需尺码图（公制+英制）", "视频封面 9:16 1080×1920，关键内容避开底部 20%", "美妆健康禁前后对比"],
+      "forbidden": ["主图水印/Logo/第三方品牌", "杂乱或暗背景", "不可验证功效宣称", "SKU 与图片不符", "违规内容（武器/成人/管制品，含背景中偶然出现的）"],
+      "constraint_keys": ["bg_white_or_clean", "fill_80", "edge_clearance", "no_crop_product", "no_text_overlay", "no_props", "no_before_after", "no_unsubstantiated_claim", "photorealistic_only", "preserve_product_identity", "no_misleading_scene", "scale_reference"]
+    },
+    {
+      "key": "temu",
+      "name_zh": "Temu",
+      "scope": "全球",
+      "source_tier": "secondary",
+      "canvas": { "ratio": "1:1（服装可用 3:4 / 4:5）", "min_px_side": 800, "recommended_long_side": 1600, "export_px": [1600, 1600] },
+      "background": { "main": "pure_white", "rgb": [255, 255, 255], "secondary": "lifestyle_allowed" },
+      "fill_pct": { "main_min": 85, "recommended": [85, 90] },
+      "formats": ["JPG", "JPEG", "PNG"],
+      "max_file_mb": 3,
+      "image_count": { "min": 3, "max": 10, "recommended": 5 },
+      "text_policy": { "main": "forbidden（含中文、Logo、水印、阴影、拼接）", "secondary": "tolerated" },
+      "ai_policy": { "stance": "算法检测白底，轻微偏色即驳回；明确要求全套图风格统一" },
+      "extra": ["尺寸图唯一一张，须含全部关键尺寸（服装 cm+inch；硬件 W×H×D）", "多件套需开箱清单图", "禁止中文字与货币符号", "禁止僵尸模特/畸形五官/大面积纹身"],
+      "forbidden": ["主图文字/水印/Logo/促销角标", "抠图假背景", "未授权 IP 形象", "过度滤镜与 AI 乱码", "商品变形扭曲"],
+      "constraint_keys": ["bg_pure_white", "fill_85", "edge_clearance", "no_text_overlay", "no_props", "photorealistic_only", "preserve_product_identity", "series_consistency", "model_adult_only", "even_studio_light", "scale_reference"]
+    },
+    {
+      "key": "aliexpress",
+      "name_zh": "AliExpress 速卖通",
+      "scope": "全球（俄/西/法/巴西为重点）",
+      "source_tier": "secondary",
+      "canvas": { "ratio": "1:1（家居等可放宽至 1:1.3）", "min_px_side": 800, "recommended_px": [1600, 1600], "max_px_side": 2000, "export_px": [1600, 1600] },
+      "background": { "main": "pure_white 或纯色", "secondary": "lifestyle_allowed" },
+      "fill_pct": { "main_min": 70, "recommended": 85 },
+      "formats": ["JPG", "JPEG", "PNG"],
+      "max_file_mb": 5,
+      "image_count": { "max": 6, "recommended": 5 },
+      "text_policy": { "main": "forbidden（英文店铺 Logo 可置左上，≤10% 画面）", "secondary": "allowed" },
+      "ai_policy": { "stance": "无明确 AI 条款；禁 3D 渲染/草图/插画作主图（须实拍）" },
+      "extra": ["服装类背景需统一（白或浅色），除英文 Logo 外不得有尺码/促销文字", "尺寸规格放详情图，优先用官方 Size Chart 模块", "主图视频 9–30 秒（最长 60），≥480P 推荐 720P"],
+      "forbidden": ["水印/URL/联系方式", "促销文字与价格角标", "其他平台水印（1688/淘宝）", "边框与拼图", "边框与拼图"],
+      "constraint_keys": ["bg_pure_white", "fill_75_90", "no_crop_product", "no_text_overlay", "no_frame_border", "photorealistic_only", "preserve_product_identity", "even_studio_light"]
+    },
+    {
+      "key": "shopee",
+      "name_zh": "Shopee",
+      "scope": "东南亚 6 国（MY/PH/TH/ID/VN/SG）+ 拉美",
+      "source_tier": "secondary",
+      "canvas": { "ratio": "1:1", "min_px_side": 500, "recommended_px": [1024, 1024], "export_px": [1200, 1200] },
+      "background": { "main": "white_or_light（推荐，非强制）", "secondary": "any" },
+      "fill_pct": { "main_min": 70, "recommended": [70, 90] },
+      "formats": ["JPG", "PNG"],
+      "max_file_mb": 2,
+      "image_count": { "max": 9 },
+      "text_policy": { "main": "促销文字会被部分广告位排除，建议放第 6–8 位；拼图与外链禁止", "secondary": "allowed" },
+      "ai_policy": { "stance": "无明确 AI 条款；官方鼓励原创实拍，直接搬厂家图会与同行同质化" },
+      "extra": ["印尼站清真食品需 Halal 认证图标", "泰国站对模特肤色多样性要求高", "带视频 listing 在搜索结果有播放图标优势"],
+      "forbidden": ["主图含外链/微信号/电话", "主图含价格折扣文字", "拼图（四宫格/九宫格）", "其他平台 Logo", "小图强行放大"],
+      "constraint_keys": ["bg_white_or_clean", "fill_70", "no_crop_product", "no_props", "photorealistic_only", "preserve_product_identity", "series_consistency", "scale_reference"]
+    },
+    {
+      "key": "lazada",
+      "name_zh": "Lazada",
+      "scope": "东南亚",
+      "source_tier": "secondary",
+      "canvas": { "ratio": "1:1", "min_px_side": 330, "recommended_px": [1000, 1000], "max_px_side": 2000, "export_px": [1200, 1200] },
+      "background": { "main": "pure_white", "secondary": "any" },
+      "fill_pct": { "main_min": 80, "recommended": [70, 90] },
+      "formats": ["JPG", "PNG"],
+      "max_file_mb": 3,
+      "image_count": { "max": 8 },
+      "text_policy": { "main": "forbidden（无文字水印）", "secondary": "allowed 且鼓励信息图" },
+      "ai_policy": { "stance": "无明确 AI 条款；视频权重高（带视频流量约 2–3 倍）" },
+      "extra": ["副图含外链或拼图会直接下架", "主图必须纯白底、居中、占比 70–90%"],
+      "forbidden": ["主图文字/水印/外链", "拼图", "杂乱背景"],
+      "constraint_keys": ["bg_pure_white", "fill_80", "no_crop_product", "no_text_overlay", "no_props", "photorealistic_only", "preserve_product_identity", "even_studio_light"]
+    },
+    {
+      "key": "etsy",
+      "name_zh": "Etsy",
+      "scope": "全球（手作/复古/POD）",
+      "official_source": "https://help.etsy.com/（Listing Image Requirements）",
+      "source_tier": "official",
+      "canvas": { "ratio": "1:1 或 4:3 横向", "first_image_min_px": 635, "recommended_px": [2000, 2000], "export_px": [2000, 2000] },
+      "background": { "main": "无要求（生活场景优于白底）", "secondary": "any" },
+      "fill_pct": { "main_min": null },
+      "formats": ["JPG", "GIF", "PNG", "SVG", "HEIC"],
+      "max_file_mb": null,
+      "file_size_guidance_mb": 1,
+      "image_count": { "max": 20, "video_max": 2 },
+      "text_policy": { "main": "allowed", "secondary": "allowed" },
+      "ai_policy": {
+        "stance": "Listing Image Requirements 要求使用真实商品的原創照片，不得是渲染图或库存图",
+        "exceptions": ["定制商品可在附加图使用电脑生成的 mockup", "POD 设计可用库存 mockup"],
+        "implication": "⚠️ 与 Amazon/Walmart 不同——Etsy 管的是「图的来源」，不只是「图的内容」。纯生成图用于实物商品不满足规则。"
+      },
+      "extra": ["首图会被裁成方/横/竖三种缩略图，构图必须四周留余量", "首图 <635px 会在搜索中降权（非拒图）", "透明 PNG 与动态 GIF 不支持（透明会渲染成黑）"],
+      "forbidden": ["渲染图/库存图替代实物照（有例外）", "失真呈现"],
+      "constraint_keys": ["no_crop_product", "preserve_product_identity", "photorealistic_only", "edge_clearance", "scale_reference", "even_studio_light"]
+    },
+    {
+      "key": "mercadolibre",
+      "name_zh": "Mercado Libre（美客多）",
+      "scope": "拉美（BR/AR/MX/CL/CO/PE）",
+      "official_source": "https://developers.mercadolibre.com.br/en_us/ios/working-with-pictures",
+      "source_tier": "official",
+      "canvas": { "ratio": "1:1", "min_px_side": 500, "recommended_px": [1200, 1200], "max_px_side": 1920, "zoom_threshold_px": 800, "export_px": [1200, 1200] },
+      "background": { "main": "取决于类目：科技/美妆/健康/商超强制白底；时尚/家居/运动/玩具/汽配/工具/娱乐鼓励场景背景", "secondary": "contextual_allowed" },
+      "fill_pct": { "main_min": null, "recommended": 95 },
+      "formats": ["JPG", "JPEG", "PNG"],
+      "color_mode": "RGB（优于 CMYK）",
+      "max_file_mb": 10,
+      "image_count": { "note": "按类目 max_pictures_per_item 而定" },
+      "text_policy": { "main": "forbidden", "secondary": "allowed" },
+      "ai_policy": { "stance": "明显的 3D 渲染未披露会触发真实性审查并冻结 listing；CGI/AI 生成图须在描述中披露" },
+      "extra": ["上传 >1200px 会被自动压到 1200；<500px 不会被放大", "服装建议约 1200×1540 竖版", "移动端搜索结果一律 1:1 瓦片"],
+      "forbidden": ["水印/Logo/促销浮层", "销售条款文字", "模糊图", "非本 listing 商品"],
+      "constraint_keys": ["bg_white_or_clean", "fill_75_90", "no_crop_product", "no_text_overlay", "no_props", "photorealistic_only", "preserve_product_identity", "no_misleading_scene", "series_consistency"]
+    },
+    {
+      "key": "rakuten",
+      "name_zh": "Rakuten 乐天市场（日本）",
+      "scope": "日本",
+      "official_source": "楽天市場「商品画像登録ガイドライン」（RMS 后台，可批量判定）",
+      "source_tier": "official（文字/边框/背景三条为官方指南原文）",
+      "canvas": { "ratio": "1:1", "min_px_side": 700, "recommended_px": [1000, 1000], "export_px": [1000, 1000] },
+      "background": { "main": "白色 #FFFFFF 或自然摄影背景", "note": "禁止白以外的纯色/渐变/图形化背景；合成背景须自然真实" },
+      "fill_pct": { "main_min": null, "recommended": 85 },
+      "formats": ["JPEG", "GIF", "PNG"],
+      "max_file_mb": 2,
+      "image_count": { "max": 20 },
+      "text_policy": { "main": "allowed 但受限——文字元素占画面 ≤20%", "secondary": "allowed", "grid_rule": "10×10 网格，触及即计 1%；0–20% 合格 / 21–30% 待改善 / 31%+ 不合格" },
+      "ai_policy": { "stance": "无明确 AI 条款；合成背景须自然，不得造成使用场景误解（官方举例：扫地机器人放在户外草坪属误导）" },
+      "extra": ["禁止任何形式边框，包括 L 形、带状、合成图之间可见的分界线与连续留白", "不计入文字面积：商品实物照、上身/佩戴效果、使用后效果、多角度、颜色变体、细节特写、套装内容、化妆品使用状态、包装、商品本体印刷文字、阴影与镜面反射、CG/工程图替换的商品本体", "RMS 提供「商品画像一括判定」，单次最多 200 张，输出 CSV 报告"],
+      "forbidden": ["任何边框（含 L 形/带状/合成接缝）", "白以外的纯色或渐变背景", "不自然合成背景", "误导性使用场景", "文字占比 >20%"],
+      "constraint_keys": ["bg_pure_white", "fill_85", "no_frame_border", "text_area_ceiling_20", "no_misleading_scene", "preserve_product_identity", "even_studio_light", "no_crop_product"]
+    },
+    {
+      "key": "zalando",
+      "name_zh": "Zalando（欧洲时尚）",
+      "scope": "欧洲",
+      "source_tier": "secondary（源自 Zalando Partner University 公开文档）",
+      "canvas": { "ratio": "1:1.44 竖版", "min_px": [762, 1100], "best_practice_px": [1801, 2600], "export_px": [1801, 2600] },
+      "background": { "main": "#FFFFFF（packshot 强制）；模特图最佳实践 #F1F1F1", "secondary": "light_neutral" },
+      "fill_pct": { "main_min": null },
+      "formats": ["JPG"],
+      "max_file_mb": 20,
+      "image_count": { "min": 3, "note": "1 张 packshot + 2 张其他；Premium/Designer 段位 5 张。网传「7 张」是 feed 的 7 个图片槽上限，不是要求" },
+      "text_policy": { "main": "forbidden", "secondary": "forbidden" },
+      "ai_policy": { "stance": "无公开 AI 条款；要求是真实商品摄影" },
+      "extra": ["竖版是硬要求——出方图等于返工", "packshot 与模特图背景色不同（#FFFFFF vs #F1F1F1）"],
+      "forbidden": ["方图（违反 1:1.44）", "主图文字"],
+      "constraint_keys": ["bg_pure_white", "no_crop_product", "preserve_product_identity", "even_studio_light", "no_text_overlay", "series_consistency"]
+    },
+    {
+      "key": "aboutyou",
+      "name_zh": "About You（欧洲时尚）",
+      "scope": "欧洲（DE/AT/CH 等）",
+      "source_tier": "secondary（源自 About You Partner Documentation）",
+      "canvas": { "ratio": "3:4 竖版", "min_px": [1125, 1500], "recommended_px": [1500, 2000], "export_px": [1500, 2000] },
+      "background": { "main": "bust view 白或透明；模特图浅灰 #F4F4F5", "secondary": "light_neutral" },
+      "fill_pct": { "main_min": null },
+      "formats": ["JPEG", "PNG"],
+      "max_file_mb": { "JPEG": 2, "PNG": 4 },
+      "image_count": { "min": 2, "recommended": "1–2 bust + 2–4 model + 1–2 detail" },
+      "text_policy": { "main": "forbidden", "secondary": "forbidden" },
+      "constraint_keys": ["bg_pure_white", "no_crop_product", "preserve_product_identity", "even_studio_light", "no_text_overlay", "series_consistency"]
+    },
+    {
+      "key": "otto",
+      "name_zh": "Otto（德国）",
+      "scope": "德国",
+      "source_tier": "secondary（无公开图片规范原文，数字来自集成商转述）",
+      "canvas": { "ratio": "未公开", "min_px": [500, 1000], "max_px_side": 4500, "export_px": [1500, 1500] },
+      "background": { "main": "浅色中性（白/浅灰/米白）", "secondary": "light_neutral" },
+      "fill_pct": { "main_min": null, "recommended": 85 },
+      "formats": ["JPG", "PNG"],
+      "color_mode": "RGB only",
+      "text_policy": { "main": "forbidden", "secondary": "forbidden" },
+      "extra": ["⚠️ 无公开一手规范，必须在 partner 后台按自己的商品组核对"],
+      "constraint_keys": ["bg_white_or_clean", "fill_85", "no_crop_product", "preserve_product_identity", "even_studio_light", "no_text_overlay"]
+    },
+    {
+      "key": "bol",
+      "name_zh": "Bol.com（荷比卢）",
+      "scope": "荷兰 / 比利时",
+      "source_tier": "secondary（源自 bol Partner Platform 文档转述）",
+      "canvas": { "ratio": "1:1", "min_px_side": 500, "zoom_threshold_px": 1200, "max_px_side": 6000, "export_px": [1500, 1500] },
+      "background": { "main": "白色/中性，无可见阴影", "secondary": "white_preferred_not_mandatory" },
+      "fill_pct": { "main_min": null, "recommended": [80, 90] },
+      "formats": ["JPG", "JPEG", "PNG"],
+      "max_file_mb": 10,
+      "min_file_kb": 30,
+      "image_count": { "max": 8, "note": "官方未公布上限，建议按 6–8 张" },
+      "text_policy": { "main": "forbidden", "secondary": "促销与服务声明仍禁止" },
+      "color_mode": "不接受 CMYK",
+      "extra": ["⚠️ 白边不计入最小/最大像素——用白边把小图垫到 500×500 属无效", "⚠️ 商品页是共享的：所有卖家内容由算法评分，最高分者的图上架", "重复图会被剔除", "主图禁止模特、禁止生活方式图、禁止插画（Hardware 与汽配类除外）", "禁止从 Google 图片或其他 bol 页面取图"],
+      "forbidden": ["折扣标签与促销语（buy now / cheap / customisable）", "服务声明（免运费/延长保修）", "水印/公司名/Logo", "Kieskeurig 与 Consumentenbond 贴纸", "竞品对比", "买家评论截图", "通用插画"],
+      "constraint_keys": ["bg_pure_white", "fill_75_90", "no_crop_product", "single_view", "no_text_overlay", "no_props", "no_mannequin", "photorealistic_only", "preserve_product_identity", "even_studio_light"]
+    },
+    {
+      "key": "cdiscount",
+      "name_zh": "Cdiscount（法国）",
+      "scope": "法国",
+      "source_tier": "secondary",
+      "canvas": { "ratio": "1:1", "min_px_side": 400, "recommended_px": [1000, 1000], "export_px": [1000, 1000] },
+      "background": { "main": "plain_white", "secondary": "any" },
+      "fill_pct": { "main_min": null },
+      "formats": ["JPEG", "PNG"],
+      "max_file_mb": 1,
+      "image_count": { "main": 1, "additional_max": 6 },
+      "text_policy": { "main": "forbidden", "secondary": "allowed" },
+      "extra": ["主图须完整展示商品，禁止只展示局部、拼图、边框、二维码与 URL"],
+      "forbidden": ["边框/画框", "拼图", "二维码/URL", "促销角标", "水印"],
+      "constraint_keys": ["bg_pure_white", "no_crop_product", "single_view", "no_text_overlay", "no_frame_border", "photorealistic_only", "preserve_product_identity", "even_studio_light"]
+    },
+    {
+      "key": "shein",
+      "name_zh": "SHEIN",
+      "scope": "全球（快时尚垂直）",
+      "source_tier": "secondary（多源口径不一致，需后台复核）",
+      "canvas": { "ratio": "1:1 强制", "min_px_side": 1000, "recommended_px": [1340, 1340], "export_px": [1340, 1340] },
+      "background": { "main": "白底或浅灰", "secondary": "lifestyle" },
+      "fill_pct": { "main_min": 70, "recommended": [70, 80] },
+      "formats": ["JPG", "PNG"],
+      "max_file_mb": 3,
+      "image_count": { "recommended": [5, 8], "max": 10 },
+      "text_policy": { "main": "forbidden", "secondary": "forbidden" },
+      "apparel": { "note": "服装类必须真人模特上身图（正/侧/背 ≥3 角度）；只给平铺图会被拒", "model_rule": "模特须成年观感、欧美面孔为主、身高区间 165–175cm，禁止人脸特写与过度磨皮" },
+      "extra": ["周更节奏 20–50 款，出图速度是核心", "1340×1339 这种 1px 偏差也会因比例不符被拒", "微小品牌标识可放右下角 ≤50×50px"],
+      "forbidden": ["只有平铺图无上身效果", "过度滤镜/磨皮", "其他平台水印", "非 1:1 比例"],
+      "constraint_keys": ["bg_pure_white", "fill_70", "no_crop_product", "no_text_overlay", "no_props", "model_adult_only", "photorealistic_only", "preserve_product_identity", "series_consistency"]
+    },
+    {
+      "key": "google_merchant",
+      "name_zh": "Google Merchant Center（Shopping 广告）",
+      "scope": "全球（广告投放侧）",
+      "official_source": "https://support.google.com/merchants/answer/6324350",
+      "source_tier": "official",
+      "canvas": { "ratio": "无强制（推荐近方）", "min_px_side": 500, "apparel_min_px_side": 250, "recommended_px": [1500, 1500], "max_megapixels": 64, "export_px": [1500, 1500] },
+      "background": { "main": "white_or_light（推荐，非强制）", "secondary": "any" },
+      "fill_pct": { "main_min": null, "recommended": [75, 90] },
+      "formats": ["JPEG", "PNG", "GIF(static)", "BMP", "TIFF", "WebP"],
+      "max_file_mb": 16,
+      "image_count": { "note": "image_link 主图 + additional_image_link 附加图" },
+      "text_policy": { "main": "forbidden（促销文字/价格/折扣/徽章/水印一律禁止）", "secondary": "forbidden" },
+      "ai_policy": { "stance": "必须是商品实拍；禁止插画、图形、占位图；套装须展示全部内容" },
+      "extra": ["⚠️ 2026 起收紧最小分辨率：500×500 起，中期预警、2027 年初开始拒登 → 建议直接做 1500×1500 以上留缓冲", "换图须换 URL，24–72 小时重抓；URL 不变最多需 6 周才被识别"],
+      "forbidden": ["促销浮层文字（SALE / 50% OFF / Free Shipping / NEW）", "水印与品牌 Logo 浮层（含自有品牌水印）", "占位图/通用图", "边框", "主体占比过小", "模糊像素化拉伸", "图与标题描述不符"],
+      "constraint_keys": ["bg_white_or_clean", "fill_75_90", "no_crop_product", "no_text_overlay", "no_promo_claim", "no_frame_border", "photorealistic_only", "preserve_product_identity", "no_props"]
+    },
+    {
+      "key": "taobao_tmall",
+      "name_zh": "淘宝 / 天猫",
+      "scope": "中国",
+      "source_tier": "secondary（官方规则中心 + 千牛后台为准）",
+      "canvas": { "ratio": "1:1", "min_px_side": 800, "recommended_px": [1200, 1200], "export_px": [1200, 1200], "detail_width_px": { "mobile": 750, "pc": 790 }, "long_image_min_px": [750, 1000], "detail_single_height_max_px": 2000 },
+      "background": { "main": "首图建议白底（天猫强制）", "white_bg_image": "第 5 张主图位，800×800 纯白 RGB(255,255,255)，38KB–300KB，仅 JPG，主体占比 70–80%，无 Logo/水印/文字/阴影" },
+      "fill_pct": { "main_min": 70, "recommended": [70, 80] },
+      "formats": ["JPG", "PNG"],
+      "max_file_mb": 3,
+      "recommended_file_kb": 500,
+      "image_count": { "max": 5, "note": "部分类目 6 张" },
+      "text_policy": { "main": "限制——促销文字占比 ≤30%，前后景色差 >50，视觉焦点在中心 1/3；天猫首图禁止促销文字/边框/水印", "secondary": "allowed" },
+      "ai_policy": { "stance": "无明确 AI 条款；白底图由算法检测纯度" },
+      "extra": ["第 5 张白底图是「猜你喜欢」「有好货」等公域流量入口", "详情页宽度发布规范 620–1500px", "主图视频 1:1 / 3:4 / 9:16，5 秒–5 分钟，实战建议 9–30 秒"],
+      "forbidden": ["首图牛皮癣（秒杀/包邮/爆款堆砌 → 降权，天猫直接拒审）", "<800×800（无法启用放大镜）", "白底图含阴影/渐变/杂色/倾斜", "盗图", "比例失调"],
+      "constraint_keys": ["bg_pure_white", "fill_70", "no_crop_product", "text_area_ceiling_30", "photorealistic_only", "preserve_product_identity", "even_studio_light", "series_consistency"]
+    },
+    {
+      "key": "jd",
+      "name_zh": "京东",
+      "scope": "中国",
+      "source_tier": "secondary",
+      "canvas": { "ratio": "1:1", "recommended_px": [800, 800], "export_px": [800, 800], "detail_width_px": { "pc": 990, "mobile": 750 } },
+      "background": { "main": "首图必须白底，商品居中" },
+      "formats": ["JPG", "PNG"],
+      "max_file_mb": 5,
+      "text_policy": { "main": "限制", "secondary": "allowed" },
+      "extra": ["清晰度不低于 72 DPI（品牌物料印刷建议 300 DPI）", "LOGO 左上"],
+      "constraint_keys": ["bg_pure_white", "fill_70", "no_crop_product", "photorealistic_only", "preserve_product_identity", "even_studio_light"]
+    },
+    {
+      "key": "douyin",
+      "name_zh": "抖音电商",
+      "scope": "中国",
+      "source_tier": "secondary",
+      "canvas": { "ratio": "1:1 或 3:4 / 9:16 竖版", "recommended_px": [800, 800], "vertical_px": [720, 1280], "detail_width_px": 750 },
+      "background": { "main": "建议白底", "secondary": "any" },
+      "formats": ["JPG", "PNG"],
+      "max_file_mb": 5,
+      "text_policy": { "main": "限制", "secondary": "allowed" },
+      "extra": ["竖屏优先，与视频封面风格统一", "快手小店同为 720×1280 / 9:16"],
+      "constraint_keys": ["bg_white_or_clean", "fill_70", "no_crop_product", "photorealistic_only", "preserve_product_identity", "series_consistency"]
+    },
+    {
+      "key": "xiaohongshu",
+      "name_zh": "小红书商城",
+      "scope": "中国",
+      "source_tier": "secondary",
+      "canvas": { "ratio": "1:1 或 3:4", "recommended_px": [1080, 1080], "alt_px": [1080, 1440] },
+      "background": { "main": "无要求（自然生活方式优于棚拍白底）" },
+      "formats": ["JPG", "PNG"],
+      "max_file_mb": 10,
+      "text_policy": { "main": "allowed" },
+      "extra": ["瀑布流布局，3:4 占屏更大", "内容调性优先，硬广感强的图表现差"],
+      "constraint_keys": ["no_crop_product", "preserve_product_identity", "series_consistency"]
+    }
+  ],
+
+  "profiles": {
+    "amazon_main": {
+      "use_case": "product-mockup",
+      "platform": "amazon",
+      "slot": "MAIN",
+      "constraint_keys": ["bg_pure_white", "fill_85", "edge_clearance", "no_crop_product", "single_view", "no_text_overlay", "no_platform_badge", "no_props", "no_packaging", "no_mannequin", "photorealistic_only", "preserve_product_identity", "even_studio_light"],
+      "output": { "px": [2000, 2000], "format": "JPEG", "color": "sRGB", "naming": "ASIN.MAIN.jpg" }
+    },
+    "amazon_lifestyle": {
+      "use_case": "compositing",
+      "platform": "amazon",
+      "slot": "PT01–PT99",
+      "constraint_keys": ["bg_lifestyle_ok", "no_crop_product", "single_view", "no_text_overlay", "no_props", "photorealistic_only", "preserve_product_identity", "no_misleading_scene", "scale_reference"],
+      "output": { "px": [2000, 2000], "format": "JPEG", "color": "sRGB", "naming": "ASIN.PT01.jpg" }
+    },
+    "amazon_apparel_main": {
+      "use_case": "product-mockup",
+      "platform": "amazon",
+      "slot": "MAIN",
+      "constraint_keys": ["bg_pure_white", "fill_85", "edge_clearance", "no_crop_product", "single_view", "no_text_overlay", "no_props", "no_mannequin", "apparel_on_model", "photorealistic_only", "preserve_product_identity", "even_studio_light", "ai_disclose_synthetic_person"],
+      "output": { "px": [2000, 2000], "format": "JPEG", "color": "sRGB", "naming": "ASIN.MAIN.jpg" }
+    },
+    "tiktok_ugc": {
+      "use_case": "ads-marketing",
+      "platform": "tiktok_shop",
+      "slot": "video_cover",
+      "constraint_keys": ["bg_lifestyle_ok", "no_text_overlay", "photorealistic_only", "preserve_product_identity", "no_misleading_scene", "model_adult_only"],
+      "output": { "px": [1080, 1920], "format": "JPEG", "safe_area": "关键内容避开底部 20%" }
+    },
+    "google_shopping_ad": {
+      "use_case": "product-mockup",
+      "platform": "google_merchant",
+      "slot": "image_link",
+      "constraint_keys": ["bg_white_or_clean", "fill_75_90", "no_crop_product", "no_text_overlay", "no_promo_claim", "no_frame_border", "photorealistic_only", "preserve_product_identity", "no_props"],
+      "output": { "px": [1500, 1500], "format": "JPEG", "max_mb": 16 }
+    },
+    "amazon_aplus_basic_header": {
+      "use_case": "ads-marketing",
+      "platform": "amazon",
+      "family": "A+ Content",
+      "slot": "Basic A+ Header Image",
+      "constraint_keys": ["wide_safe_zone_70", "bottom_20_clear", "subject_offset_side", "lifestyle_context_scene", "no_embedded_text", "text_legible_mobile", "no_price_promo_time", "no_superlative_claim", "no_qr_contact_url", "no_competitor_ref", "static_no_animation", "no_fake_button_ui", "preserve_product_identity"],
+      "output": { "px": [970, 300], "master_px": [3000, 1200], "format": "JPEG", "color": "RGB", "max_mb": 2, "dpi_min": 72 }
+    },
+    "amazon_aplus_premium_fullwidth": {
+      "use_case": "ads-marketing",
+      "platform": "amazon",
+      "family": "A+ Content",
+      "slot": "Premium A+ Full-width image",
+      "constraint_keys": ["wide_safe_zone_70", "bottom_20_clear", "subject_offset_side", "lifestyle_context_scene", "no_embedded_text", "text_legible_mobile", "no_price_promo_time", "no_superlative_claim", "no_qr_contact_url", "no_competitor_ref", "static_no_animation", "preserve_product_identity"],
+      "output": { "px": [1464, 600], "mobile_px": [600, 450], "master_px": [3000, 1200], "format": "JPEG", "color": "RGB", "max_mb": 2, "dpi_min": 72 }
+    },
+    "amazon_brand_story_bg": {
+      "use_case": "ads-marketing",
+      "platform": "amazon",
+      "family": "A+ Brand Story",
+      "slot": "Brand carousel background",
+      "constraint_keys": ["wide_safe_zone_70", "bottom_20_clear", "subject_offset_side", "lifestyle_context_scene", "no_embedded_text", "no_price_promo_time", "no_superlative_claim", "no_qr_contact_url", "static_no_animation"],
+      "output": { "px": [1464, 625], "mobile_px": [463, 625], "master_px": [3000, 1200], "format": "JPEG", "color": "RGB", "max_mb": 2 }
+    },
+    "amazon_brand_story_focus": {
+      "use_case": "ads-marketing",
+      "platform": "amazon",
+      "family": "A+ Brand Story",
+      "slot": "Focus image card",
+      "constraint_keys": ["lifestyle_context_scene", "no_embedded_text", "no_price_promo_time", "no_superlative_claim", "no_qr_contact_url", "static_no_animation"],
+      "output": { "px": [362, 453], "format": "JPEG", "color": "RGB", "max_mb": 2 }
+    },
+    "amazon_store_hero": {
+      "use_case": "ads-marketing",
+      "platform": "amazon",
+      "family": "Amazon Stores",
+      "slot": "Header hero image",
+      "constraint_keys": ["wide_safe_zone_70", "bottom_20_clear", "subject_offset_side", "lifestyle_context_scene", "no_embedded_text", "no_price_promo_time", "no_superlative_claim", "no_qr_contact_url", "static_no_animation"],
+      "output": { "px": [3000, 600], "format": "JPEG", "max_mb": 5 }
+    },
+    "amazon_store_image_tile": {
+      "use_case": "ads-marketing",
+      "platform": "amazon",
+      "family": "Amazon Stores",
+      "slot": "Image tile (medium / full width)",
+      "constraint_keys": ["bottom_20_clear", "lifestyle_context_scene", "no_embedded_text", "no_price_promo_time", "no_superlative_claim", "static_no_animation"],
+      "output": { "px": [3000, 1500], "max_mb": 5, "note": "带链接标题时底部 19% 被遮挡；方形 tile 为 12%" }
+    },
+    "amazon_sb_custom_image": {
+      "use_case": "ads-marketing",
+      "platform": "amazon",
+      "family": "Sponsored Brands",
+      "slot": "Custom lifestyle image",
+      "constraint_keys": ["subject_offset_side", "lifestyle_context_scene", "no_embedded_text", "no_price_promo_time", "no_superlative_claim", "no_qr_contact_url", "no_competitor_ref", "static_no_animation", "no_fake_button_ui", "text_legible_mobile"],
+      "output": { "px": [1200, 628], "responsive": [[1200, 1200], [900, 1600]], "format": "JPEG", "dpi_min": 72 }
+    },
+    "walmart_main": {
+      "use_case": "product-mockup",
+      "platform": "walmart",
+      "slot": "MAIN",
+      "constraint_keys": ["bg_pure_white", "edge_clearance", "wm_main_text_props_allowed", "no_non_english", "no_other_retailer_logo", "no_out_of_stock_hint", "no_duplicate_image", "no_promo_claim", "wm_ai_truthful_only", "photorealistic_only", "preserve_product_identity", "even_studio_light"],
+      "output": { "px": [2200, 2200], "format": "JPEG", "color": "RGB", "max_mb": 5, "naming": "14 位 GTIN.jpg", "note": "2200² 高画质 JPEG 易超 5MB，导出质量控在 80–85%" }
+    },
+    "walmart_apparel_fashion": {
+      "use_case": "product-mockup",
+      "platform": "walmart",
+      "family": "Fashion / Apparel",
+      "slot": "MAIN",
+      "constraint_keys": ["apparel_portrait_3x4", "crop_buffer_5", "bg_pure_white", "no_text_overlay", "no_non_english", "no_other_retailer_logo", "single_view", "photorealistic_only", "preserve_product_identity", "even_studio_light"],
+      "output": { "px": [1500, 2000], "ratio": "3:4", "format": "JPEG", "color": "sRGB", "dpi_min": 72, "dpi_preferred": 300, "naming": "GTIN_SW.jpg" },
+      "note": "⚠️ 与 Amazon 服装主图规则相反：Amazon 成人装必须 on-model 站姿且禁所有人台；Walmart Fashion 允许 model / mannequin / ghost。两平台服装主图不能复用"
+    }
+  },
+
+  "banner_slots": [
+    {
+      "key": "aplus_basic_header",
+      "family": "A+ Content",
+      "slot_zh": "Basic A+ 大横幅 Header Image",
+      "ratio": "3.23:1",
+      "px": [970, 600],
+      "master_px": [3000, 1200],
+      "max_file_mb": 2,
+      "dpi_min": 72,
+      "color_mode": "RGB",
+      "formats": ["JPEG", "PNG", "BMP"],
+      "safe_zone": { "horizontal_keep_pct": 70, "bottom_clear_pct": 20 },
+      "text_policy": "文字由模块字段承载，尽量不烧在图上",
+      "source_tier": "官方（尺寸等级）+ 二手（模块级像素）",
+      "official_source": "https://sellercentral.amazon.com/help/hub/reference/external/GLG4RQK2Y2RJADU4",
+      "constraint_keys": ["wide_safe_zone_70", "bottom_20_clear", "subject_offset_side", "lifestyle_context_scene", "no_embedded_text", "no_price_promo_time", "no_superlative_claim", "no_qr_contact_url", "no_competitor_ref", "static_no_animation", "no_fake_button_ui"]
+    },
+    {
+      "key": "aplus_basic_header_text",
+      "family": "A+ Content",
+      "slot_zh": "Basic A+ 图片带文字叠加（Header 6）",
+      "ratio": "3.23:1",
+      "px": [970, 300],
+      "master_px": [3000, 1200],
+      "max_file_mb": 2,
+      "source_tier": "官方",
+      "official_source": "https://sellercentral.amazon.com/help/hub/reference/external/GLG4RQK2Y2RJADU4",
+      "constraint_keys": ["subject_offset_side", "lifestyle_context_scene", "text_legible_mobile", "no_price_promo_time", "no_superlative_claim", "static_no_animation"]
+    },
+    {
+      "key": "aplus_premium_fullwidth",
+      "family": "A+ Content",
+      "slot_zh": "Premium A+ 全宽图",
+      "ratio": "2.44:1",
+      "px": [1464, 600],
+      "mobile_px": [600, 450],
+      "master_px": [3000, 1200],
+      "max_file_mb": 2,
+      "source_tier": "二手（多源交叉）",
+      "constraint_keys": ["wide_safe_zone_70", "bottom_20_clear", "subject_offset_side", "lifestyle_context_scene", "no_embedded_text", "no_price_promo_time", "no_superlative_claim", "static_no_animation"]
+    },
+    {
+      "key": "aplus_module_tile",
+      "family": "A+ Content",
+      "slot_zh": "A+ 模块方图（300×300 / 220×220 / 135×135 等）",
+      "ratio": "1:1",
+      "px": [300, 300],
+      "variants": [[220, 220], [135, 135], [300, 400], [150, 300], [600, 180]],
+      "max_file_mb": 2,
+      "source_tier": "二手（多源交叉）",
+      "constraint_keys": ["no_embedded_text", "no_price_promo_time", "no_superlative_claim", "static_no_animation", "preserve_product_identity"]
+    },
+    {
+      "key": "brand_story_bg",
+      "family": "A+ Brand Story",
+      "slot_zh": "品牌轮播背景",
+      "ratio": "2.34:1",
+      "px": [1464, 625],
+      "mobile_px": [463, 625],
+      "master_px": [3000, 1200],
+      "max_file_mb": 2,
+      "text_limit": { "headline": 30, "body": 135 },
+      "note": "另有 3000×600 的较新口径，两说并存",
+      "source_tier": "二手（多源交叉）",
+      "constraint_keys": ["wide_safe_zone_70", "bottom_20_clear", "subject_offset_side", "lifestyle_context_scene", "no_embedded_text", "no_price_promo_time", "static_no_animation"]
+    },
+    {
+      "key": "brand_story_focus",
+      "family": "A+ Brand Story",
+      "slot_zh": "焦点图卡片",
+      "ratio": "0.8:1",
+      "px": [362, 453],
+      "max_file_mb": 2,
+      "text_limit": { "headline": 30, "body": 135 },
+      "source_tier": "二手（多源交叉）",
+      "constraint_keys": ["lifestyle_context_scene", "no_embedded_text", "no_price_promo_time", "no_superlative_claim", "static_no_animation"]
+    },
+    {
+      "key": "brand_story_logo",
+      "family": "A+ Brand Story",
+      "slot_zh": "Logo 与描述",
+      "ratio": "2.17:1",
+      "px": [315, 145],
+      "alt_px": [300, 150],
+      "max_file_mb": 2,
+      "text_limit": { "body": 450 },
+      "note": "315×145 与 300×150 两源冲突，待复核",
+      "source_tier": "二手（两源冲突）",
+      "constraint_keys": ["no_embedded_text", "static_no_animation"]
+    },
+    {
+      "key": "brand_story_asin",
+      "family": "A+ Brand Story",
+      "slot_zh": "ASIN 与 Store 展示（每槽位）",
+      "ratio": "0.91:1",
+      "px": [166, 182],
+      "max_file_mb": 2,
+      "source_tier": "二手（多源交叉）",
+      "constraint_keys": ["no_embedded_text", "preserve_product_identity", "static_no_animation"]
+    },
+    {
+      "key": "store_hero",
+      "family": "Amazon Stores",
+      "slot_zh": "Header Hero image",
+      "ratio": "5:1",
+      "px": [3000, 600],
+      "max_file_mb": 5,
+      "safe_zone": { "horizontal_keep_pct": 70, "bottom_clear_pct": 20, "note": "官方：最多裁 30%（左右各 15%）；小屏 Logo 额外遮挡左侧 18%" },
+      "official_source": "https://advertising.amazon.com/resources/ad-specs/stores",
+      "source_tier": "官方",
+      "constraint_keys": ["wide_safe_zone_70", "bottom_20_clear", "subject_offset_side", "lifestyle_context_scene", "no_embedded_text", "no_price_promo_time", "no_superlative_claim", "no_qr_contact_url", "static_no_animation"]
+    },
+    {
+      "key": "store_logo",
+      "family": "Amazon Stores",
+      "slot_zh": "品牌 Logo",
+      "ratio": "1:1",
+      "px": [400, 400],
+      "max_file_mb": 5,
+      "official_source": "https://advertising.amazon.com/resources/ad-specs/stores",
+      "source_tier": "官方",
+      "constraint_keys": ["static_no_animation"]
+    },
+    {
+      "key": "store_image_tile",
+      "family": "Amazon Stores",
+      "slot_zh": "图片 tile（full width / large / medium / small）",
+      "px": { "full_width": [1500, 20], "large": [1500, 1500], "medium": [1500, 750], "small": [750, 750] },
+      "recommended_width_px": 3000,
+      "max_file_mb": 5,
+      "occlusion": { "rectangle_bottom_pct": 19, "square_bottom_pct": 12 },
+      "official_source": "https://advertising.amazon.com/resources/ad-specs/stores",
+      "source_tier": "官方",
+      "constraint_keys": ["bottom_20_clear", "lifestyle_context_scene", "no_embedded_text", "no_price_promo_time", "no_superlative_claim", "static_no_animation"]
+    },
+    {
+      "key": "store_text_over_image",
+      "family": "Amazon Stores",
+      "slot_zh": "图 + 文字（Text over image）",
+      "px": { "full_width": [3000, 1500], "large": [1500, 1500], "medium": [1500, 750], "small": [750, 750] },
+      "max_file_mb": 5,
+      "official_source": "https://advertising.amazon.com/resources/ad-specs/stores",
+      "source_tier": "官方",
+      "constraint_keys": ["subject_offset_side", "lifestyle_context_scene", "no_embedded_text", "text_legible_mobile", "no_price_promo_time", "static_no_animation"]
+    },
+    {
+      "key": "store_shoppable",
+      "family": "Amazon Stores",
+      "slot_zh": "Shoppable 图（最多 6 个热点）",
+      "px": { "full_width": [1500, 750], "large": [1500, 1500], "medium": [1500, 750], "small": [750, 750] },
+      "recommended_px": [3000, 1500],
+      "max_file_mb": 5,
+      "official_source": "https://advertising.amazon.com/resources/ad-specs/stores",
+      "source_tier": "官方",
+      "constraint_keys": ["lifestyle_context_scene", "no_embedded_text", "preserve_product_identity", "static_no_animation"]
+    },
+    {
+      "key": "store_gallery",
+      "family": "Amazon Stores",
+      "slot_zh": "Gallery（最多 8 张）",
+      "px": [1500, 750],
+      "max_file_mb": 5,
+      "official_source": "https://advertising.amazon.com/resources/ad-specs/stores",
+      "source_tier": "官方",
+      "constraint_keys": ["series_consistency", "no_embedded_text", "static_no_animation"]
+    },
+    {
+      "key": "sb_custom_image",
+      "family": "Sponsored Brands",
+      "slot_zh": "自定义生活场景图",
+      "ratio": "1.91:1",
+      "px": [1200, 628],
+      "responsive_variants": [[1200, 1200], [900, 1600]],
+      "dpi_min": 72,
+      "formats": ["JPEG", "PNG"],
+      "note": "Logo 单独字段，400×400 min 1:1；标题 ≤50 字符",
+      "source_tier": "二手（官方 ad-specs 页 404）",
+      "constraint_keys": ["subject_offset_side", "lifestyle_context_scene", "no_embedded_text", "text_legible_mobile", "no_price_promo_time", "no_superlative_claim", "no_qr_contact_url", "no_competitor_ref", "static_no_animation", "no_fake_button_ui"]
+    },
+    {
+      "key": "sponsored_display",
+      "family": "Sponsored Display / DSP",
+      "slot_zh": "展示广告图位",
+      "sizes": [[300, 250], [414, 125], [320, 50], [160, 600], [300, 600], [650, 130], [728, 90], [970, 250], [980, 55]],
+      "dpi_min": 72,
+      "max_file_kb": 200,
+      "static_only": true,
+      "cta_policy": "展示广告不自建 CTA；970×250 广告牌 CTA 不得做成按钮形状",
+      "official_source": "https://advertising.amazon.com/zh-cn/library/guides/sponsored-brands-display-ads-moderation/",
+      "source_tier": "官方（尺寸与政策）+ 二手（200KB 上限）",
+      "constraint_keys": ["static_no_animation", "no_fake_button_ui", "no_price_promo_time", "no_superlative_claim", "no_competitor_ref", "text_legible_mobile", "preserve_product_identity"]
+    },
+    {
+      "key": "wm_company_banner",
+      "family": "Walmart 品牌内容",
+      "slot_zh": "Company Banner（官方）",
+      "ratio": "16:9",
+      "px": [1676, 940],
+      "formats": ["PNG", "JPG"],
+      "official_source": "https://marketplacelearn.walmart.com/guides/Getting%20started/Account%20settings/Manage-company-information-in-Seller-Center",
+      "source_tier": "官方",
+      "constraint_keys": ["wide_safe_zone_70", "bottom_20_clear", "subject_offset_side", "lifestyle_context_scene", "no_embedded_text", "no_price_promo_time", "no_superlative_claim", "no_non_english", "static_no_animation"]
+    },
+    {
+      "key": "wm_company_logo",
+      "family": "Walmart 品牌内容",
+      "slot_zh": "Company Logo（官方）",
+      "ratio": "1:1",
+      "px": [504, 504],
+      "formats": ["PNG", "JPG"],
+      "official_source": "https://marketplacelearn.walmart.com/guides/Getting%20started/Account%20settings/Manage-company-information-in-Seller-Center",
+      "source_tier": "官方",
+      "constraint_keys": ["static_no_animation"]
+    },
+    {
+      "key": "wm_brand_shop_hero",
+      "family": "Walmart Brand Shop",
+      "slot_zh": "Hero banner",
+      "ratio": "16:9",
+      "px": [1676, 940],
+      "max_file_mb": 10,
+      "formats": ["JPG", "PNG"],
+      "text_policy": "必填标题与副标题；可选眉题与法律免责声明；0–3 个 CTA 按钮",
+      "note": "与官方 Company Banner 同尺寸；Logo 1:1 最小 240×240 透明 PNG ≤10MB",
+      "source_tier": "官方（尺寸同源）+ 二手（板块级要求）",
+      "constraint_keys": ["wide_safe_zone_70", "bottom_20_clear", "subject_offset_side", "lifestyle_context_scene", "no_embedded_text", "no_price_promo_time", "no_superlative_claim", "no_non_english", "static_no_animation"]
+    },
+    {
+      "key": "wm_rich_media_hero",
+      "family": "Walmart Rich Media",
+      "slot_zh": "Rich Media Hero banner",
+      "ratio": "3.23:1",
+      "px": [970, 300],
+      "master_px": [3000, 1200],
+      "feature_set_px": [[240, 240], [500, 500]],
+      "video": { "format": "MP4", "max_mb": 100, "thumbnail": [640, 360], "thumbnail_max_kb": 250 },
+      "spin": { "frame_max_mb": 1, "formats": ["JPG", "PNG"] },
+      "note": "⭐ Rich Media 须由 Walmart 批准的第三方托管商托管，Seller Center 提交的是托管 URL（iFrame 加载）；与 Amazon A+ 平台内免费自建不同",
+      "source_tier": "二手（官方 Rich media 页当前无内容）",
+      "constraint_keys": ["wide_safe_zone_70", "bottom_20_clear", "subject_offset_side", "lifestyle_context_scene", "no_embedded_text", "no_price_promo_time", "no_superlative_claim", "static_no_animation"]
+    },
+    {
+      "key": "wm_sb_banner",
+      "family": "Walmart Connect — Sponsored Brands",
+      "slot_zh": "Sponsored Brands Banner / Brand Logo",
+      "ratio": "5:3",
+      "px": [300, 180],
+      "formats": ["PNG"],
+      "source_tier": "二手（官方 ad specs 页 JS 渲染，抓不到）",
+      "constraint_keys": ["no_price_promo_time", "no_superlative_claim", "no_competitor_ref", "static_no_animation", "text_legible_mobile", "preserve_product_identity"]
+    },
+    {
+      "key": "wm_display",
+      "family": "Walmart Connect — Display / DSP",
+      "slot_zh": "展示广告图位",
+      "sizes": { "onsite": [[160, 600], [300, 250], [300, 600], [320, 100], [320, 50], [728, 90], [970, 90]], "offsite_dsp": [[300, 250], [728, 90], [160, 600], [300, 600], [970, 250], [320, 50]] },
+      "formats": { "onsite": ["JPG", "PNG", "HTML5"], "offsite_dsp": ["JPG", "PNG", "GIF", "HTML5"] },
+      "max_file_kb": 200,
+      "dpi_min": 72,
+      "color_mode": "RGB",
+      "animation": { "max_seconds": 15, "max_loops": 3, "ends_on": "final frame" },
+      "policy_note": "除非明确豁免不得出现具体价格或省钱宣称；二维码只能用 Walmart 官方工具生成",
+      "source_tier": "二手（官方页 JS 渲染）+ 官方（Walmart Connect Canada 政策页）",
+      "constraint_keys": ["no_price_promo_time", "no_superlative_claim", "no_competitor_ref", "no_qr_contact_url", "text_legible_mobile", "preserve_product_identity"]
+    }
+  ],
+
+  "banner_defaults": {
+    "master_profiles": [
+      { "name": "超宽幅通用", "px": [3000, 1200], "ratio": "2.5:1", "covers": ["A+ Basic 3.23:1", "A+ Premium 2.44:1", "Brand Story 背景 2.34:1"], "note": "向下裁切安全" },
+      { "name": "Store Hero 专用", "px": [3000, 600], "ratio": "5:1", "covers": ["Stores Header Hero"], "note": "最宽，无法从其他比例裁出，必须单独生成" },
+      { "name": "广告横版", "px": [1200, 628], "ratio": "1.91:1", "covers": ["Sponsored Brands 自定义图"] },
+      { "name": "竖版卡片", "px": [362, 453], "ratio": "0.8:1", "covers": ["Brand Story 焦点卡", "ASIN 展示"] },
+      { "name": "品牌横幅 16:9", "px": [1676, 940], "ratio": "16:9", "covers": ["Walmart Company Banner / Brand Shop Hero"], "note": "Walmart 官方尺寸；与 Amazon Store Hero 的 5:1 不通用" },
+      { "name": "服装竖版 3:4", "px": [1500, 2000], "ratio": "3:4", "covers": ["Walmart Fashion 主图"], "note": "该品类拒收方图" }
+    ],
+    "universal_banner_constraint_en": "Keep all vital visual elements inside the central 70% horizontal band. Leave the bottom 20% clear of the subject. Place the subject off-center to one side and leave clean negative space for the platform's own text overlay. Show a real use context, not a product floating on white.",
+    "universal_banner_constraint_zh": "关键视觉元素落在中间 70% 水平带内；底部 20% 留空；主体偏一侧，另一侧留白给平台文字层；真实使用场景，非白底产品图"
+  },
+
+  "todo_verify": [
+    { "item": "eBay 官方 Picture Policy 原始条文（官方页有反爬验证，当前数字来自多源交叉）" },
+    { "item": "Temu 官方 Partner Center 图片规范（当前 800 下限 / 1600 推荐 / 3MB / 85–90% 均为二手口径）" },
+    { "item": "TikTok Shop 官方上架质量指南原文（600 与 800 下限两种说法并存）" },
+    { "item": "SHEIN 后台图片规范（1340×1340 与 1000×1000 两种口径并存）" },
+    { "item": "Zalando / About You / Otto 的 Partner 后台按商品组的现行图片规范（本文数字来自公开文档转述，非账号内实时值）" },
+    { "item": "Amazon 服装类《Seller Imaging Guidelines — Clothing & Accessories》是否有比 Spring 2021 更新的版本" },
+    { "item": "Google Merchant Center 500×500 最小分辨率的强制生效日期（传闻 2027 年初）" },
+    { "item": "A+ Content Manager 内各模块上传框标称尺寸（banner_slots 中 A+ 系列模块级像素均为二手口径）" },
+    { "item": "Brand Story 背景为 1464×625 还是 3000×600（两说并存）" },
+    { "item": "Brand Story Logo 为 315×145 还是 300×150（两源冲突）" },
+    { "item": "Brand Story Q&A 字符上限为 750 还是 600（两源冲突）" },
+    { "item": "Sponsored Brands 自定义图 1200×628 的官方出处（官方 ad-specs 页 404，当前为二手口径）" },
+    { "item": "Sponsored Display 200KB 上限与 300×250 / 728×90 / 160×600 三尺寸" },
+    { "item": "DSP IAB 标准尺寸与 200KB 初始加载上限" },
+    { "item": "Premium A+ 是否真的无准入门槛（官方称无额外资格标准，与二手「邀请制」冲突，官方为准但建议后台实测）" },
+    { "item": "Walmart 3P 卖家的服装类是否也按 3:4 / 1500×2000（该规格出自 1P 供应商 Fashion Content Standards，与 3P 通用 1:1 冲突）" },
+    { "item": "Walmart 通用商品图填充率的官方数字（官方页无任何百分比，85% 为二手多源口径）" },
+    { "item": "Walmart 单 listing 图片数量上限（官方只给「至少 4 张」，24 张为二手说法）" },
+    { "item": "Walmart Rich Media 全部素材规格（官方页当前无内容；970×300 / 240–500² / 100MB 均为二手）" },
+    { "item": "Walmart Rich Media 批准托管商现行名单（二手源提 Dashna）" },
+    { "item": "Walmart Brand Shop 各板块图尺寸（仅 Hero 与 Logo 有明确尺寸；Skinny banner / Promo cards / Category hub 未知）" },
+    { "item": "Walmart Connect 官方 ad specs 现行值（官方页 JS 渲染抓不到，当前为汇总站口径）" },
+    { "item": "Walmart Sponsored Brands Banner 300×180 与 Brand Logo 是否同一字段" },
+    { "item": "Walmart Off-site DSP 200KB 上限是否含 HTML5 全部资源（未区分初始加载与总大小）" },
+    { "item": "Walmart Marketplace 服装主图是否禁止真人模特（二手源称禁，官方页未提；Fashion 官方规范则允许 model/mannequin）" }
+  ]
+}
